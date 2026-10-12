@@ -172,10 +172,78 @@ async def test_tui() -> None:
     print("✅ TUI smoke OK")
 
 
+def test_devices_json() -> None:
+    from photoarch import devices
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "cfg" / "devices.json"
+        assert devices.load(p) == {}, "missing file -> empty mapping"
+        assert devices.save({"A": "Alpha"}, p)
+        assert devices.load(p) == {"A": "Alpha"}
+        p.write_text("{not valid json", encoding="utf-8")
+        assert devices.load(p) == {}, "corrupt file -> empty mapping"
+        p.write_text('["a", "list"]', encoding="utf-8")
+        assert devices.load(p) == {}, "non-dict JSON -> empty mapping"
+        print("✅ devices json OK")
+
+
+def test_device_mapping() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src, dst = root / "src", root / "dst"
+        make_photo(src / "a.jpg", "2021:03:14 10:00:00", "Pixel 7")
+        make_photo(src / "b.jpg")  # no EXIF -> "Unknown device"
+
+        # no mapping -> raw device in folder, new device reported
+        plan = archiver.scan(src, dst, "device_year_month", {})
+        assert plan.unknown_devices == ["TestMake Pixel 7"], plan.unknown_devices
+        assert any(
+            str(i.dest_dir).startswith("TestMake Pixel 7/") for i in plan.items
+        ), [i.dest_dir for i in plan.items]
+
+        # known mapping -> friendly name used, no unknowns
+        plan2 = archiver.scan(
+            src, dst, "device_year_month", {"TestMake Pixel 7": "My Pixel"}
+        )
+        assert plan2.unknown_devices == []
+        assert any(str(i.dest_dir).startswith("My Pixel/") for i in plan2.items)
+
+        # apply_device_names rebuilds dest_dir AND the conflict list
+        plan3 = archiver.scan(src, dst, "device_year_month", {})
+        applied = archiver.apply_device_names(
+            plan3, {"TestMake Pixel 7": "My Pixel"}, "device_year_month", dst
+        )
+        assert applied.unknown_devices == []
+        item = next(i for i in applied.items if i.src.name == "a.jpg")
+        assert str(item.dest_dir).startswith("My Pixel/"), item.dest_dir
+        assert not applied.conflicts
+        # a file already at the friendly destination must appear as a conflict
+        friendly_file = dst / item.dest_dir / "a.jpg"
+        friendly_file.parent.mkdir(parents=True, exist_ok=True)
+        friendly_file.write_bytes(b"x")
+        applied2 = archiver.apply_device_names(
+            plan3, {"TestMake Pixel 7": "My Pixel"}, "device_year_month", dst
+        )
+        conf = [c for c in applied2.conflicts if c.item.src.name == "a.jpg"]
+        assert conf and conf[0].dest_exists, applied2.conflicts
+
+        # friendly name is sanitized at path-build time (typed as-is in JSON)
+        plan4 = archiver.scan(
+            src, dst, "device_year_month", {"TestMake Pixel 7": "A/B:C"}
+        )
+        a_item = next(i for i in plan4.items if i.src.name == "a.jpg")
+        # device stays ONE path part ("A_B_C"), no injected separators
+        assert a_item.dest_dir.parts[0] == "A_B_C", a_item.dest_dir
+        assert len(a_item.dest_dir.parts) == 3, a_item.dest_dir
+        print("✅ device mapping OK")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
     test_dry_run()
+    test_devices_json()
+    test_device_mapping()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())
     print("\n🎉 All tests passed")

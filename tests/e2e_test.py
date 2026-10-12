@@ -11,7 +11,8 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from photoarch.app import PhotoArchApp
+from photoarch.app import DeviceNamingScreen, PhotoArchApp
+from textual.widgets import Input, Select
 
 
 def make_photo(path: Path, date: str | None = None, model: str | None = None) -> None:
@@ -39,7 +40,12 @@ async def main() -> None:
         make_photo(src / "misc" / "cat.png")
         (src / "readme.txt").write_text("nope")
 
+        # Pre-seed known devices so the naming modal only appears for new ones.
+        devices_file = root / "devices.json"
+        devices_file.write_text('{"TestMake iPhone 13": "Test Phone"}', encoding="utf-8")
+
         app = PhotoArchApp()
+        app.devices_path = devices_file  # never touch the real ~/.config file
         async with app.run_test(size=(140, 45)) as pilot:
             # simulate folder selection directly (modal browsing is covered by unit smoke)
             app._source = src
@@ -96,6 +102,51 @@ async def main() -> None:
             assert app._stat_values.get("conflicts_skipped") == "3", app._stat_values
             assert not (copied / "beach_1.jpg").exists(), "skip should not add files"
             print("✅ e2e conflict modal OK (skip honored)")
+
+            # --- new device -> mandatory naming modal ---
+            make_photo(src / "trip" / "pixel.jpg", "2023:05:06 10:00:00", "Pixel 9")
+            app.query_one("#fmt-select", Select).value = "device_year_month"
+            await pilot.pause()
+            await pilot.click("#btn-archive")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+
+            assert app.screen.__class__ is DeviceNamingScreen, app.screen
+            screen = app.screen
+            assert screen.devices_found == ["TestMake Pixel 9"], screen.devices_found
+            screen.query_one("#dev-input-0", Input).value = "My Pixel"
+            await pilot.click("#dev-save")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+
+            # pixel.jpg lands in the friendly-name folder; known device reused
+            friendly = dst / "My Pixel" / "2023" / "05"
+            assert (friendly / "pixel.jpg").exists(), list(dst.rglob("*"))
+            assert (dst / "Test Phone" / "2022" / "08" / "beach.jpg").exists()
+            # naming was mandatory -> JSON now knows the new device
+            import json
+
+            saved = json.loads(devices_file.read_text(encoding="utf-8"))
+            assert saved["TestMake Pixel 9"] == "My Pixel", saved
+            assert saved["TestMake iPhone 13"] == "Test Phone", saved
+            print("✅ e2e naming modal OK (friendly folder + JSON saved)")
+
+            # --- second run: no naming modal (device now known), conflict modal ---
+            await pilot.click("#btn-archive")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+            from photoarch.app import ConflictScreen
+
+            assert app.screen.__class__ is ConflictScreen, app.screen
+            app.screen.query_one("#act-skip").value = True
+            await pilot.click("#conflict-apply")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+            print("✅ e2e device remembered OK (no modal on second run)")
 
     print("\n🎉 End-to-end tests passed")
 

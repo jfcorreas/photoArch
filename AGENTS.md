@@ -23,8 +23,13 @@ the destination root.
 - `photoarch/organizer.py` — media extension sets + `FORMATS` dict
   (key → (label, template)). Adding a destination format = one dict entry.
 - `photoarch/metadata.py` — EXIF date/device with mtime/"Unknown device" fallback.
+- `photoarch/devices.py` — device → friendly-name JSON mapping
+  (`~/.config/photoarch/devices.json`, exact-match keys). Tolerant loader
+  (missing/corrupt file → `{}`); `save()` returns False on I/O failure.
 - `photoarch/app.py` — the TUI: `DirectoryScreen` (folder picker modal),
-  `ConflictScreen` (returns "rename"/"overwrite"/"skip"/"cancel"), `PhotoArchApp`.
+  `ConflictScreen` (returns "rename"/"overwrite"/"skip"/"cancel"),
+  `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
+  `PhotoArchApp`.
 
 ## Textual 8.x gotchas (cost real debugging time — do not "simplify" these away)
 
@@ -42,6 +47,9 @@ the destination root.
   setting the private `listing._highlighted` bypasses the reactive and breaks messages.
 - Worker threads must reach the UI via `self.app.call_from_thread(...)`, never touch
   widgets directly (see `_scan_and_plan` / `_do_copy` in `app.py`).
+- In an auto-height modal (`height: auto`), **never size children with `fr` units**
+  (`max-height: 1fr`): the dialog stretches to full screen and `pilot.click()`
+  silently misses the buttons. Use a fixed `max-height: <rows>`.
 
 ## Invariants (enforced in `PhotoArchApp._run` + `archiver`)
 
@@ -51,6 +59,12 @@ the destination root.
   disk AND the in-batch set).
 - `shutil.copy2` preserves metadata; tests assert the source tree is byte-identical
   after runs (`tests/e2e_test.py`).
+- Device friendly names: the JSON lives OUTSIDE the source tree
+  (`~/.config/photoarch/devices.json`, path in `devices.py`). The mapping is
+  passed into `scan(source, dest, fmt, device_map)` / `apply_device_names()` —
+  the archiver never reads the file itself. "Unknown device" is never prompted
+  or stored; naming is mandatory for every other new device (empty input =
+  raw name, still stored).
 
 ## Memory
 - When you start, read `MEMORY.md` to understand the project’s status and the decisions that have been made.

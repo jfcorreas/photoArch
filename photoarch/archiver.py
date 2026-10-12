@@ -38,6 +38,9 @@ class Conflict:
     resolved_dest: Optional[Path] = None
 
 
+UNKNOWN_DEVICE = "Unknown device"  # metadata.py fallback; never prompted/stored
+
+
 @dataclass
 class ScanResult:
     items: list[PlanItem] = field(default_factory=list)
@@ -46,13 +49,48 @@ class ScanResult:
     folders_to_create: int = 0
     skipped: int = 0  # non-media files
     errors: list[str] = field(default_factory=list)
+    unknown_devices: list[str] = field(default_factory=list)  # not yet in the mapping
 
 
-def scan(source: Path, dest: Path, fmt: str) -> ScanResult:
-    """Walk the source (read-only) and compute the archive plan."""
-    result = ScanResult()
+def _plan_dests(result: ScanResult, dest: Path) -> None:
+    """Recompute conflicts and folder count from each item's dest_dir (in place).
+
+    Any change to dest_dir (e.g. friendly device names) invalidates the
+    previous conflict list, so this is shared by scan() and
+    apply_device_names().
+    """
     seen_dests: dict[str, PlanItem] = {}  # full dest path -> item, for in-batch duplicates
     dirs_planned: set[str] = set()
+    result.conflicts = []
+    result.folders_to_create = 0
+
+    for item in result.items:
+        full_dest = dest / item.dest_dir / item.name
+        key = str(full_dest)
+        if key in seen_dests:
+            result.conflicts.append(Conflict(item=item, dest_exists=False))
+        elif full_dest.exists():
+            result.conflicts.append(Conflict(item=item, dest_exists=True))
+
+        dir_key = str(item.dest_dir)
+        if dir_key not in dirs_planned:
+            dirs_planned.add(dir_key)
+            result.folders_to_create += 1
+
+        seen_dests[key] = item
+
+
+def scan(
+    source: Path, dest: Path, fmt: str, device_map: Optional[dict[str, str]] = None
+) -> ScanResult:
+    """Walk the source (read-only) and compute the archive plan.
+
+    device_map: raw device name -> friendly name (from devices.py). Devices
+    not present in the mapping are collected in result.unknown_devices
+    (except the "Unknown device" fallback).
+    """
+    result = ScanResult()
+    mapping = device_map or {}
 
     for root, dirs, files in os.walk(source):
         # Do not descend into hidden dirs
@@ -72,26 +110,50 @@ def scan(source: Path, dest: Path, fmt: str) -> ScanResult:
                 continue
 
             when, device = metadata.read_capture_info(src)
-            dest_dir = build_relative_dir(fmt, when, device)
+            dest_dir = build_relative_dir(fmt, when, mapping.get(device, device))
             item = PlanItem(src=src, dest_dir=dest_dir, size=size, when=when, device=device)
-
-            full_dest = dest / dest_dir / name
-            key = str(full_dest)
-            if key in seen_dests:
-                result.conflicts.append(Conflict(item=item, dest_exists=False))
-            elif full_dest.exists():
-                result.conflicts.append(Conflict(item=item, dest_exists=True))
-
-            dir_key = str(dest_dir)
-            if dir_key not in dirs_planned:
-                dirs_planned.add(dir_key)
-                result.folders_to_create += 1
-
-            seen_dests[key] = item
             result.items.append(item)
             result.total_size += size
 
+            if (
+                device != UNKNOWN_DEVICE
+                and device not in mapping
+                and device not in result.unknown_devices
+            ):
+                result.unknown_devices.append(device)
+
+    _plan_dests(result, dest)
     return result
+
+
+def apply_device_names(
+    result: ScanResult, device_map: dict[str, str], fmt: str, dest: Path
+) -> ScanResult:
+    """Rebuild the plan using friendly device names.
+
+    Recomputes every item's dest_dir (template needs fmt) and rebuilds the
+    conflict list and folder count, since they depend on dest_dir.
+    Returns a new ScanResult; unknown_devices is cleared.
+    """
+    out = ScanResult(
+        total_size=result.total_size,
+        skipped=result.skipped,
+        errors=list(result.errors),
+    )
+    for item in result.items:
+        friendly = device_map.get(item.device, item.device)
+        out.items.append(
+            PlanItem(
+                src=item.src,
+                dest_dir=build_relative_dir(fmt, item.when, friendly),
+                size=item.size,
+                when=item.when,
+                device=item.device,
+                final_name=item.final_name,
+            )
+        )
+    _plan_dests(out, dest)
+    return out
 
 
 def apply_resolution(result: ScanResult, action: str, dest_root: Path) -> ScanResult:

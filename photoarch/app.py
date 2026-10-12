@@ -14,6 +14,7 @@ from textual.widgets import (
     DataTable,
     Footer,
     Header,
+    Input,
     Label,
     OptionList,
     RadioSet,
@@ -25,7 +26,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import archiver
+from . import archiver, devices
 from .organizer import FORMATS
 
 
@@ -164,6 +165,55 @@ class ConflictScreen(ModalScreen[str]):
 
 
 # --------------------------------------------------------------------------
+# New-device naming modal
+# --------------------------------------------------------------------------
+
+class DeviceNamingScreen(ModalScreen[Optional[dict[str, str]]]):
+    """Ask a friendly name for each newly found device.
+
+    NAMING IS MANDATORY: every input is prefilled with the raw EXIF name,
+    so "Save" always produces an entry per device (empty field = raw name
+    stored as-is). Returns {raw_device: friendly_name}, or None when the
+    user cancels the whole operation.
+    """
+
+    def __init__(self, devices_found: list[str]) -> None:
+        super().__init__()
+        self.devices_found = devices_found
+
+    def compose(self) -> ComposeResult:
+        fields = []
+        for i, raw in enumerate(self.devices_found):
+            fields.append(Label(f"📷  {raw}", classes="dev-raw"))
+            fields.append(Input(value=raw, placeholder=raw, id=f"dev-input-{i}"))
+        yield Vertical(
+            Label("🆕  New device(s) found — choose a friendly name", id="dev-title"),
+            Label(
+                "The friendly name is used in the destination folders "
+                "and saved in devices.json.",
+                id="dev-hint",
+            ),
+            VerticalScroll(Vertical(*fields, id="dev-fields"), id="dev-scroll"),
+            Horizontal(
+                Button("💾  Save names", variant="primary", id="dev-save"),
+                Button("✖  Cancel operation", id="dev-cancel"),
+                id="dev-buttons",
+            ),
+            id="dev-dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "dev-save":
+            mapping: dict[str, str] = {}
+            for i, raw in enumerate(self.devices_found):
+                value = self.query_one(f"#dev-input-{i}", Input).value.strip()
+                mapping[raw] = value or raw  # empty field -> raw name (still stored)
+            self.dismiss(mapping)
+        elif event.button.id == "dev-cancel":
+            self.dismiss(None)
+
+
+# --------------------------------------------------------------------------
 # Stats table rows: (label, key)
 # --------------------------------------------------------------------------
 
@@ -244,6 +294,20 @@ class PhotoArchApp(App):
     #conflict-table { height: 12; }
     #conflict-actions { margin: 1 0; }
     #conflict-buttons Button { margin: 0 1 0 0; width: auto; }
+
+    #dev-dialog {
+        width: 70%;
+        height: auto;
+        max-height: 85%;
+        border: thick $accent;
+        padding: 1;
+        background: $surface;
+    }
+    #dev-hint { margin: 1 0; }
+    #dev-scroll { height: auto; max-height: 24; }
+    .dev-raw { margin-top: 1; text-style: bold; color: $accent; }
+    #dev-fields Input { margin-bottom: 1; }
+    #dev-buttons Button { margin: 1 1 0 0; width: auto; }
     """
 
     BINDINGS = [
@@ -257,6 +321,8 @@ class PhotoArchApp(App):
         self._source: Optional[Path] = None
         self._dest: Optional[Path] = None
         self._stat_values: dict[str, str] = {}
+        # Where the device->friendly-name JSON is stored (tests override this)
+        self.devices_path: Path = devices.DEVICES_FILE
 
     # ---- layout ----------------------------------------------------------
 
@@ -398,6 +464,7 @@ class PhotoArchApp(App):
             return
 
         fmt = str(self.query_one("#fmt-select", Select).value)
+        device_map = devices.load(self.devices_path)
 
         self._reset_stats()
         self.query_one("#results-log", RichLog).clear()
@@ -407,14 +474,18 @@ class PhotoArchApp(App):
         self._set_stat("dest", str(dst_r))
         self._set_stat("format", FORMATS.get(fmt, next(iter(FORMATS.values())))[0])
         self.notify("🔎 Scanning source folder…")
-        self._scan_and_plan(src_r, dst_r, fmt, dry_run)
+        self._scan_and_plan(src_r, dst_r, fmt, dry_run, device_map)
 
     @work(thread=True, exclusive=True, group="archive")
-    def _scan_and_plan(self, src: Path, dst: Path, fmt: str, dry_run: bool) -> None:
-        plan = archiver.scan(src, dst, fmt)
-        self.app.call_from_thread(self._after_scan, plan, dst, dry_run)
+    def _scan_and_plan(
+        self, src: Path, dst: Path, fmt: str, dry_run: bool, device_map: dict[str, str]
+    ) -> None:
+        plan = archiver.scan(src, dst, fmt, device_map)
+        self.app.call_from_thread(self._after_scan, plan, dst, fmt, dry_run)
 
-    def _after_scan(self, plan: archiver.ScanResult, dst: Path, dry_run: bool) -> None:
+    def _after_scan(
+        self, plan: archiver.ScanResult, dst: Path, fmt: str, dry_run: bool
+    ) -> None:
         for err in plan.errors:
             self._log_error(err)
         self._set_stat("scanned", str(len(plan.items) + plan.skipped))
@@ -429,6 +500,39 @@ class PhotoArchApp(App):
             self.notify("ℹ️ No media files found in the source folder.", severity="information")
             return
 
+        if plan.unknown_devices:
+            def got(mapping: Optional[dict[str, str]]) -> None:
+                self._after_device_names(plan, dst, fmt, dry_run, mapping)
+            self.push_screen(DeviceNamingScreen(plan.unknown_devices), got)
+            return
+
+        self._resolve_conflicts(plan, dst, dry_run)
+
+    def _after_device_names(
+        self,
+        plan: archiver.ScanResult,
+        dst: Path,
+        fmt: str,
+        dry_run: bool,
+        mapping: Optional[dict[str, str]],
+    ) -> None:
+        if mapping is None:
+            self.notify("🚫 Operation cancelled by user.")
+            return
+        merged = devices.load(self.devices_path)
+        merged.update(mapping)
+        if not devices.save(merged, self.devices_path):
+            self._log_error(
+                f"⚠️ Could not save {self.devices_path}; names apply to this run only."
+            )
+        # dest_dir changes -> rebuild conflicts/folder count with friendly names
+        plan = archiver.apply_device_names(plan, merged, fmt, dst)
+        self._set_stat("folders", str(plan.folders_to_create))
+        self._resolve_conflicts(plan, dst, dry_run)
+
+    def _resolve_conflicts(
+        self, plan: archiver.ScanResult, dst: Path, dry_run: bool
+    ) -> None:
         if plan.conflicts:
             policy = self.query_one("#conflict-policy", RadioSet).pressed_button
             policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
