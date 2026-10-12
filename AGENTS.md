@@ -36,6 +36,7 @@ the destination root.
 - `photoarch/app.py` — the TUI: `DirectoryScreen` (folder picker modal),
   `ConflictScreen` (returns "rename"/"overwrite"/"skip"/"cancel"),
   `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
+  Devices tab (rename/remove known devices; writes only `devices.json`),
   `PhotoArchApp`.
 
 ## Textual 8.x gotchas (cost real debugging time — do not "simplify" these away)

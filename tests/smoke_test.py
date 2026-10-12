@@ -352,6 +352,82 @@ def test_video_device() -> None:
         print("✅ video device OK")
 
 
+async def test_devices_panel() -> None:
+    """Devices tab: rename and remove known devices (writes only devices.json)."""
+    import json
+
+    from textual.widgets import DataTable, Input, TabbedContent
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "devices.json"
+        cfg.write_text(
+            '{"GoPro HERO11": "My GoPro", "TestMake iPhone 13": "Test Phone"}',
+            encoding="utf-8",
+        )
+        app = PhotoArchApp()
+        app.devices_path = cfg  # never touch the real ~/.config file
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            app.query_one("#tabs", TabbedContent).active = "tab-devices"
+            await pilot.pause()
+            table = app.query_one("#devices-table", DataTable)
+            inp = app.query_one("#dev-manage-input", Input)
+
+            def rows() -> list[tuple[str, ...]]:
+                return [tuple(table.get_row_at(i)) for i in range(table.row_count)]
+
+            # sorted by raw name
+            assert [r[0] for r in rows()] == ["GoPro HERO11", "TestMake iPhone 13"], rows()
+            # row highlight prefills the input with the current friendly name
+            table.move_cursor(row=1)
+            await pilot.pause()
+            assert inp.value == "Test Phone", inp.value
+            table.move_cursor(row=0)
+            await pilot.pause()
+            assert inp.value == "My GoPro", inp.value
+
+            # --- rename ---
+            inp.value = "Action Cam"
+            await pilot.click("#dev-save-name")
+            await pilot.pause(0.25)  # > Button.active_effect_duration (0.2s debounce)
+            saved = json.loads(cfg.read_text(encoding="utf-8"))
+            assert saved == {
+                "GoPro HERO11": "Action Cam",
+                "TestMake iPhone 13": "Test Phone",
+            }, saved
+            assert rows()[0] == ("GoPro HERO11", "Action Cam"), rows()
+
+            # --- empty input keeps the raw name (same rule as the naming modal) ---
+            table.move_cursor(row=1)
+            await pilot.pause()
+            inp.value = ""
+            await pilot.click("#dev-save-name")
+            await pilot.pause(0.25)
+            saved = json.loads(cfg.read_text(encoding="utf-8"))
+            assert saved["TestMake iPhone 13"] == "TestMake iPhone 13", saved
+
+            # --- remove ---
+            table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.click("#dev-remove")
+            await pilot.pause(0.25)
+            saved = json.loads(cfg.read_text(encoding="utf-8"))
+            assert saved == {"TestMake iPhone 13": "TestMake iPhone 13"}, saved
+            assert [r[0] for r in rows()] == ["TestMake iPhone 13"], rows()
+
+            # --- remove the last one -> placeholder row, actions become no-ops ---
+            table.move_cursor(row=0)
+            await pilot.pause()
+            await pilot.click("#dev-remove")
+            await pilot.pause(0.25)
+            assert json.loads(cfg.read_text(encoding="utf-8")) == {}
+            assert rows()[0][0] == "(no known devices yet)", rows()
+            await pilot.click("#dev-save-name")  # no device selected -> notify only
+            await pilot.pause(0.25)
+            assert json.loads(cfg.read_text(encoding="utf-8")) == {}
+    print("✅ devices panel OK (rename + remove)")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
@@ -361,6 +437,7 @@ def main() -> None:
     test_video_device()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())
+    asyncio.run(test_devices_panel())
     print("\n🎉 All tests passed")
 
 

@@ -269,8 +269,11 @@ class PhotoArchApp(App):
     #sidebar Button { width: 100%; margin-bottom: 1; }
     .section { margin-top: 1; text-style: bold; color: $accent; }
 
-    #content { padding: 1 2; width: 100%; }
+    #content { padding: 1 2; width: 1fr; }
     #path-summary { height: auto; margin-bottom: 1; }
+    #tabs { height: 1fr; }
+    #tabs ContentSwitcher { height: 1fr; }
+    #tab-devices { height: 100%; }
     #stats-panel { height: 100%; }
     #stats-table { height: auto; }
     #results-log, #errors-log { height: 100%; }
@@ -310,6 +313,12 @@ class PhotoArchApp(App):
     .dev-raw { margin-top: 1; text-style: bold; color: $accent; }
     #dev-fields Input { margin-bottom: 1; }
     #dev-buttons Button { margin: 1 1 0 0; width: auto; }
+
+    #devices-table { height: 1fr; margin-bottom: 1; }
+    #devices-hint { width: 100%; height: auto; margin-bottom: 1; }
+    #dev-manage-row { height: auto; }
+    #dev-manage-row Input { width: 1fr; }
+    #dev-manage-row Button { width: auto; margin-left: 1; }
     """
 
     BINDINGS = [
@@ -327,6 +336,8 @@ class PhotoArchApp(App):
         self._ext_counts: dict[str, int] = {}
         # Where the device->friendly-name JSON is stored (tests override this)
         self.devices_path: Path = devices.DEVICES_FILE
+        # Last mapping shown in the Devices tab (raw device -> friendly name)
+        self._devices_map: dict[str, str] = {}
 
     # ---- layout ----------------------------------------------------------
 
@@ -366,8 +377,28 @@ class PhotoArchApp(App):
         await tabs.add_pane(TabPane("📊 Statistics", DataTable(id="stats-table"), id="tab-stats"))
         await tabs.add_pane(TabPane("📋 Results", RichLog(id="results-log", wrap=True), id="tab-results"))
         await tabs.add_pane(TabPane("❌ Errors", RichLog(id="errors-log", wrap=True), id="tab-errors"))
+        await tabs.add_pane(
+            TabPane(
+                "📇 Devices",
+                DataTable(id="devices-table"),
+                Label(
+                    "Rename the selected device (empty field = keep the raw name) or remove it. "
+                    "Removal only forgets the name — the device is asked again on the next run. "
+                    "Renaming does not move folders created by earlier runs.",
+                    id="devices-hint",
+                ),
+                Horizontal(
+                    Input(placeholder="friendly name of the selected device", id="dev-manage-input"),
+                    Button("💾  Save name", variant="primary", id="dev-save-name"),
+                    Button("🗑  Remove", id="dev-remove"),
+                    id="dev-manage-row",
+                ),
+                id="tab-devices",
+            )
+        )
         self._reset_stats()
         self._update_summary()
+        self._refresh_devices_table()
 
     # ---- stats helpers ---------------------------------------------------
 
@@ -424,9 +455,73 @@ class PhotoArchApp(App):
             f"🗂️ Format: [bold]{label}[/bold]"
         )
 
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        # Keep the Devices tab in sync with devices.json every time it is opened
+        if event.pane.id == "tab-devices":
+            self._refresh_devices_table()
+
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "fmt-select":
             self._update_summary()
+
+    # ---- devices panel ---------------------------------------------------
+
+    def _refresh_devices_table(self) -> None:
+        """Reload devices.json into the Devices tab (raw name -> friendly name)."""
+        table = self.query_one("#devices-table", DataTable)
+        table.clear()
+        if not table.columns:
+            table.add_columns("📷 Device (raw)", "✏️ Friendly name")
+            table.cursor_type = "row"
+        self._devices_map = devices.load(self.devices_path)
+        for raw in sorted(self._devices_map):
+            table.add_row(raw, self._devices_map[raw], key=raw)
+        if not self._devices_map:
+            table.add_row("(no known devices yet)", "")
+        self.query_one("#dev-manage-input", Input).value = ""
+
+    def _selected_raw_device(self) -> Optional[str]:
+        """Raw device name under the table cursor, or None (nothing usable)."""
+        table = self.query_one("#devices-table", DataTable)
+        if table.row_count == 0:
+            return None
+        row_key = table.coordinate_to_cell_key(table.cursor_coordinate).row_key
+        raw = str(row_key.value)  # str(row_key) is the object repr, not the key
+        return raw if raw in self._devices_map else None  # placeholder row -> None
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        # Other tables (stats) either have no row cursor or use other ids
+        if event.data_table.id != "devices-table":
+            return
+        raw = str(event.row_key.value)
+        self.query_one("#dev-manage-input", Input).value = self._devices_map.get(raw, "")
+
+    def _save_device_name(self) -> None:
+        raw = self._selected_raw_device()
+        if raw is None:
+            self.notify("⚠️ Select a device first.", severity="error")
+            return
+        value = self.query_one("#dev-manage-input", Input).value.strip() or raw
+        mapping = devices.load(self.devices_path)
+        mapping[raw] = value
+        if not devices.save(mapping, self.devices_path):
+            self.notify(f"⚠️ Could not save {self.devices_path}.", severity="error")
+            return
+        self.notify(f"✅ {raw} → {value}")
+        self._refresh_devices_table()
+
+    def _remove_device(self) -> None:
+        raw = self._selected_raw_device()
+        if raw is None:
+            self.notify("⚠️ Select a device first.", severity="error")
+            return
+        mapping = devices.load(self.devices_path)
+        mapping.pop(raw, None)
+        if not devices.save(mapping, self.devices_path):
+            self.notify(f"⚠️ Could not save {self.devices_path}.", severity="error")
+            return
+        self.notify(f"🗑 Removed {raw} — it will be asked again on the next run.")
+        self._refresh_devices_table()
 
     # ---- folder picking --------------------------------------------------
 
@@ -450,6 +545,10 @@ class PhotoArchApp(App):
             self.action_dry_run()
         elif bid == "btn-archive":
             self.action_archive()
+        elif bid == "dev-save-name":
+            self._save_device_name()
+        elif bid == "dev-remove":
+            self._remove_device()
 
     # ---- run logic -------------------------------------------------------
 
@@ -545,6 +644,7 @@ class PhotoArchApp(App):
             self._log_error(
                 f"⚠️ Could not save {self.devices_path}; names apply to this run only."
             )
+        self._refresh_devices_table()  # Devices tab may be open behind the modal
         # dest_dir changes -> rebuild conflicts/folder count with friendly names
         plan = archiver.apply_device_names(plan, merged, fmt, dst)
         self._set_stat("folders", str(plan.folders_to_create))

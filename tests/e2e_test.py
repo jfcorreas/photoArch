@@ -13,7 +13,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from photoarch.app import DeviceNamingScreen, PhotoArchApp
-from textual.widgets import Input, Select
+from textual.widgets import DataTable, Input, Select, TabbedContent
 
 
 def make_photo(path: Path, date: str | None = None, model: str | None = None) -> None:
@@ -196,6 +196,40 @@ async def main() -> None:
             await asyncio.sleep(1.5)
             await pilot.pause()
             print("✅ e2e device remembered OK (no modal on second run)")
+
+            # --- devices panel: rename applies from the NEXT run ---
+            app.query_one("#tabs", TabbedContent).active = "tab-devices"
+            await pilot.pause()
+            table = app.query_one("#devices-table", DataTable)
+            idx = next(
+                i
+                for i in range(table.row_count)
+                if table.get_row_at(i)[0] == "TestMake Pixel 9"
+            )
+            table.move_cursor(row=idx)
+            await pilot.pause()
+            app.query_one("#dev-manage-input", Input).value = "Pixel Renamed"
+            await pilot.click("#dev-save-name")
+            await pilot.pause()
+            saved = json.loads(devices_file.read_text(encoding="utf-8"))
+            assert saved["TestMake Pixel 9"] == "Pixel Renamed", saved
+
+            # next run uses the new friendly name; only pixel.jpg is new
+            await pilot.click("#btn-archive")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+            assert app.screen.__class__ is ConflictScreen, app.screen  # 5 old files
+            app.screen.query_one("#act-skip").value = True
+            await pilot.click("#conflict-apply")
+            await pilot.pause()
+            await asyncio.sleep(1.5)
+            await pilot.pause()
+            assert (
+                dst / "Pixel Renamed" / "2023" / "05" / "pixel.jpg"
+            ).exists(), list(dst.rglob("*"))
+            assert app._stat_values.get("copied") == "1", app._stat_values
+            print("✅ e2e devices panel OK (rename picked up by next run)")
 
     print("\n🎉 End-to-end tests passed")
 

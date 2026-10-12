@@ -1,8 +1,9 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.2: TUI archives photos/videos by EXIF date+device. New devices are named by the
+- v0.1.3: TUI archives photos/videos by EXIF date+device. New devices are named by the
   user (mandatory) and the friendly name is reused in folder names on later runs.
+  Devices tab lists known devices: rename (empty = raw name) or remove.
   Videos get their device from a pure ISO-BMFF parser; stats panel shows
   images/videos counts with their formats listed under each (count desc).
 ## Decisions (and why)
@@ -22,6 +23,10 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   even for formats without {device} and during dry run (naming mandatory; empty
   input = raw name, still stored). Editing the JSON later does not migrate
   already-created folders.
+- Devices panel — new tab; save/remove rewrite devices.json (file is the truth:
+  table reloads on tab activation and after the naming modal saves). Remove →
+  device re-prompted on next run; rename never moves folders of earlier runs
+  (hint in tab). Mapping is read at run start → mid-run edits apply next run.
 - Stats — images/videos rows in STAT_ROWS + dynamic per-extension rows from
   ScanResult.by_ext, grouped under their kind row (IMAGE_EXTS / VIDEO_EXTS,
   count desc). Tests override `app.devices_path` (temp JSON).
@@ -34,5 +39,11 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   screen and pilot.click() misses buttons silently; use fixed max-height rows.
 - MP4 atom types are EXACTLY 4 bytes ("©mod", never "©modl"), and `meta` carries
   4 version/flags bytes before its children — both cost real debugging time.
+- Pilot: repeat clicks on the same button within Button.active_effect_duration
+  (0.2s, the `-active` class) are silently ignored — pause(0.25) after clicks.
+- DataTable RowKey: str(row_key) is the object repr, use row_key.value. TabbedContent /
+  ContentSwitcher / TabPane all default height:auto — fr/% inside a pane only resolve
+  after explicit heights on #tabs + its ContentSwitcher; #content width:100% laid the
+  content out wider than the screen (buttons unclickable) → changed to 1fr.
 ## Next Steps
 - (blank for now)
