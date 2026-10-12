@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import metadata
-from .organizer import MEDIA_EXTS, build_relative_dir
+from .organizer import IMAGE_EXTS, MEDIA_EXTS, VIDEO_EXTS, build_relative_dir
+
+# metadata.py fallback labels; never prompted/stored in devices.json
+UNKNOWN_DEVICE = metadata.UNKNOWN_DEVICE
+VIDEOS_DEVICE = metadata.VIDEOS_DEVICE
 
 
 @dataclass
@@ -38,9 +42,6 @@ class Conflict:
     resolved_dest: Optional[Path] = None
 
 
-UNKNOWN_DEVICE = "Unknown device"  # metadata.py fallback; never prompted/stored
-
-
 @dataclass
 class ScanResult:
     items: list[PlanItem] = field(default_factory=list)
@@ -50,6 +51,10 @@ class ScanResult:
     skipped: int = 0  # non-media files
     errors: list[str] = field(default_factory=list)
     unknown_devices: list[str] = field(default_factory=list)  # not yet in the mapping
+    # media statistics: counts by kind and by extension (".jpg" -> 12)
+    images: int = 0
+    videos: int = 0
+    by_ext: dict[str, int] = field(default_factory=dict)
 
 
 def _plan_dests(result: ScanResult, dest: Path) -> None:
@@ -87,7 +92,7 @@ def scan(
 
     device_map: raw device name -> friendly name (from devices.py). Devices
     not present in the mapping are collected in result.unknown_devices
-    (except the "Unknown device" fallback).
+    (except the "Unknown device"/"Videos" fallback labels).
     """
     result = ScanResult()
     mapping = device_map or {}
@@ -115,8 +120,15 @@ def scan(
             result.items.append(item)
             result.total_size += size
 
+            ext = src.suffix.lower()
+            result.by_ext[ext] = result.by_ext.get(ext, 0) + 1
+            if ext in IMAGE_EXTS:
+                result.images += 1
+            elif ext in VIDEO_EXTS:
+                result.videos += 1
+
             if (
-                device != UNKNOWN_DEVICE
+                device not in (UNKNOWN_DEVICE, VIDEOS_DEVICE)
                 and device not in mapping
                 and device not in result.unknown_devices
             ):
@@ -139,6 +151,9 @@ def apply_device_names(
         total_size=result.total_size,
         skipped=result.skipped,
         errors=list(result.errors),
+        images=result.images,
+        videos=result.videos,
+        by_ext=dict(result.by_ext),
     )
     for item in result.items:
         friendly = device_map.get(item.device, item.device)

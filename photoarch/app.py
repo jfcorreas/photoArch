@@ -27,7 +27,7 @@ from textual.widgets import (
 )
 
 from . import archiver, devices
-from .organizer import FORMATS
+from .organizer import FORMATS, IMAGE_EXTS, VIDEO_EXTS
 
 
 # --------------------------------------------------------------------------
@@ -225,6 +225,8 @@ STAT_ROWS = [
     ("", None),  # spacer
     ("🔎 Files scanned", "scanned"),
     ("🖼️ Media files found", "media"),
+    ("📸 Images", "images"),
+    ("🎬 Videos", "videos"),
     ("⏭️ Non-media skipped", "non_media"),
     ("📋 Files planned", "planned"),
     ("", None),
@@ -321,6 +323,8 @@ class PhotoArchApp(App):
         self._source: Optional[Path] = None
         self._dest: Optional[Path] = None
         self._stat_values: dict[str, str] = {}
+        # media counts per extension, rendered as extra rows in the stats table
+        self._ext_counts: dict[str, int] = {}
         # Where the device->friendly-name JSON is stored (tests override this)
         self.devices_path: Path = devices.DEVICES_FILE
 
@@ -373,14 +377,26 @@ class PhotoArchApp(App):
         if not table.columns:
             table.add_columns("📊 Metric", " value")
             table.cursor_type = "none"
+        # which format rows belong under which stats row
+        ext_groups = {"images": (IMAGE_EXTS, "  🖼️ "), "videos": (VIDEO_EXTS, "  🎬 ")}
         for label, key in STAT_ROWS:
             if key is None:
                 table.add_row("", "")
-            else:
-                table.add_row(label, self._stat_values.get(key, "—"))
+                continue
+            table.add_row(label, self._stat_values.get(key, "—"))
+            # image formats under Images, video formats under Videos
+            group = ext_groups.get(key)
+            if group:
+                ext_set, prefix = group
+                for ext, count in sorted(
+                    self._ext_counts.items(), key=lambda kv: (-kv[1], kv[0])
+                ):
+                    if ext in ext_set:
+                        table.add_row(f"{prefix}{ext}", str(count))
 
     def _reset_stats(self) -> None:
         self._stat_values = {}
+        self._ext_counts = {}
         self._render_stats()
 
     def _set_stat(self, key: str, value: str) -> None:
@@ -490,7 +506,11 @@ class PhotoArchApp(App):
             self._log_error(err)
         self._set_stat("scanned", str(len(plan.items) + plan.skipped))
         self._set_stat("media", str(len(plan.items)))
+        self._set_stat("images", str(plan.images))
+        self._set_stat("videos", str(plan.videos))
         self._set_stat("non_media", str(plan.skipped))
+        self._ext_counts = dict(plan.by_ext)
+        self._render_stats()
         self._set_stat("planned", str(len(plan.items)))
         self._set_stat("folders", str(plan.folders_to_create))
         self._set_stat("bytes", human_size(plan.total_size))

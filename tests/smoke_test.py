@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import sys
 import tempfile
 from datetime import datetime
@@ -33,6 +34,62 @@ def make_photo(path: Path, date: str | None = None, model: str | None = None) ->
         img.save(path)
 
 
+def make_video(
+    path: Path, make: str | None = None, model: str | None = None, style: str = "ilst"
+) -> None:
+    """Craft a minimal ISO-BMFF (mp4/mov) file with device metadata.
+
+    style="ilst": ilst 4CC entries (©mak/©mod + data atoms)
+    style="udta": QuickTime user-data strings under udta (GoPro style)
+    style="mdta": ilst entries via the meta/keys registry (iPhone style)
+    """
+
+    def atom(typ: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", 8 + len(payload)) + typ + payload
+
+    def data(text: str) -> bytes:
+        return atom(b"data", struct.pack(">II", 1, 0) + text.encode("utf-8"))
+
+    ftyp = atom(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+
+    if style == "ilst":
+        ilst = b""
+        if make:
+            ilst += atom(b"\xa9mak", data(make))
+        if model:
+            ilst += atom(b"\xa9mod", data(model))
+        meta = atom(b"meta", b"\x00\x00\x00\x00" + atom(b"ilst", ilst))
+        body = atom(b"moov", atom(b"udta", meta))
+    elif style == "udta":
+        def lang_str(text: str) -> bytes:  # 16-bit language code + text
+            return struct.pack(">H", 0x55C4) + text.encode("utf-8")
+
+        udta_body = b""
+        if make:
+            udta_body += atom(b"\xa9mak", lang_str(make))
+        if model:
+            udta_body += atom(b"\xa9mod", lang_str(model))
+        body = atom(b"moov", atom(b"udta", udta_body))
+    else:  # "mdta"
+        entries: list[tuple[bytes, str]] = []
+        if make:
+            entries.append((b"com.apple.quicktime.make", make))
+        if model:
+            entries.append((b"com.apple.quicktime.model", model))
+        keys_payload = struct.pack(">II", 0, len(entries))
+        ilst = b""
+        for index, (key, value) in enumerate(entries, start=1):
+            keys_payload += struct.pack(">I", 8 + len(key)) + b"mdta" + key
+            ilst += atom(struct.pack(">I", index), data(value))
+        meta = atom(
+            b"meta", b"\x00\x00\x00\x00" + atom(b"keys", keys_payload) + atom(b"ilst", ilst)
+        )
+        body = atom(b"moov", atom(b"udta", meta))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(ftyp + body)
+
+
 def test_organizer() -> None:
     when = datetime(2023, 7, 5, 12, 0, 0)
     assert str(build_relative_dir("year_month", when, "X")) == "2023/07"
@@ -60,6 +117,10 @@ def test_scan_and_copy() -> None:
         assert len(plan.items) == 3, plan.items
         assert plan.skipped == 1
         assert not plan.conflicts
+        # media statistics: by kind and by extension
+        assert plan.images == 2, plan.images
+        assert plan.videos == 1, plan.videos
+        assert plan.by_ext == {".jpg": 2, ".mp4": 1}, plan.by_ext
 
         # photo1 has EXIF date -> 2021/03/15 (timezone-independent from EXIF)
         dirs = {str(i.dest_dir) for i in plan.items}
@@ -238,12 +299,66 @@ def test_device_mapping() -> None:
         print("✅ device mapping OK")
 
 
+def test_video_device() -> None:
+    from photoarch import metadata
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = root / "src"
+
+        # (1) ilst 4CC entries: ©mak / ©mod
+        gopro = src / "gopro.mp4"
+        make_video(gopro, make="GoPro", model="HERO11 Black", style="ilst")
+        assert metadata.read_capture_info(gopro)[1] == "GoPro HERO11 Black"
+
+        # (2) QuickTime udta strings (GoPro/Sony style)
+        dji = src / "dji.mov"
+        make_video(dji, make="DJI", model="Mavic 3", style="udta")
+        assert metadata.read_capture_info(dji)[1] == "DJI Mavic 3"
+
+        # (3) mdta keys registry (iPhone style), model only
+        phone = src / "phone.mov"
+        make_video(phone, model="iPhone 15", style="mdta")
+        assert metadata.read_capture_info(phone)[1] == "iPhone 15"
+
+        # malformed files must never raise; videos fall back to the "Videos"
+        # folder label (images would fall back to "Unknown device")
+        junk = src / "junk.mp4"
+        junk.write_bytes(b"\x00" * 64)
+        assert metadata.read_capture_info(junk)[1] == "Videos"
+        cut = src / "cut.mp4"
+        cut.write_bytes(struct.pack(">I", 4096) + b"moov")  # claims 4KB, has 4
+        assert metadata.read_capture_info(cut)[1] == "Videos"
+        empty = src / "none.mp4"
+        empty.write_bytes(b"")
+        assert metadata.read_capture_info(empty)[1] == "Videos"
+
+        # scan: video devices join the friendly-name folder layout
+        plan = archiver.scan(src, root / "dst", "device_year_month")
+        by_name = {i.src.name: i for i in plan.items}
+        assert str(by_name["gopro.mp4"].dest_dir).startswith("GoPro HERO11 Black/")
+        assert str(by_name["dji.mov"].dest_dir).startswith("DJI Mavic 3/")
+        assert str(by_name["phone.mov"].dest_dir).startswith("iPhone 15/")
+        # metadata-less videos go to a "Videos" folder and are never prompted
+        assert str(by_name["junk.mp4"].dest_dir).startswith("Videos/")
+        assert str(by_name["none.mp4"].dest_dir).startswith("Videos/")
+        # order = sorted file names: cut, dji, gopro, none, phone
+        assert plan.unknown_devices == [
+            "DJI Mavic 3",
+            "GoPro HERO11 Black",
+            "iPhone 15",
+        ], plan.unknown_devices
+        assert plan.videos == 6 and plan.images == 0, (plan.videos, plan.images)
+        print("✅ video device OK")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
     test_dry_run()
     test_devices_json()
     test_device_mapping()
+    test_video_device()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())
     print("\n🎉 All tests passed")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import sys
 import tempfile
 from pathlib import Path
@@ -31,6 +32,27 @@ def make_photo(path: Path, date: str | None = None, model: str | None = None) ->
         img.save(path)
 
 
+def make_video(path: Path, make: str | None = None, model: str | None = None) -> None:
+    """Craft a minimal ISO-BMFF (mp4/mov) file with make/model atoms."""
+
+    def atom(typ: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", 8 + len(payload)) + typ + payload
+
+    def data(text: str) -> bytes:
+        return atom(b"data", struct.pack(">II", 1, 0) + text.encode("utf-8"))
+
+    ilst = b""
+    if make:
+        ilst += atom(b"\xa9mak", data(make))
+    if model:
+        ilst += atom(b"\xa9mod", data(model))
+    meta = atom(b"meta", b"\x00\x00\x00\x00" + atom(b"ilst", ilst))
+    moov = atom(b"moov", atom(b"udta", meta))
+    ftyp = atom(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(ftyp + moov)
+
+
 async def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -38,11 +60,16 @@ async def main() -> None:
         make_photo(src / "trip" / "beach.jpg", "2022:08:01 09:30:00", "iPhone 13")
         make_photo(src / "trip" / "sunset.jpg", "2022:08:01 19:45:00", "iPhone 13")
         make_photo(src / "misc" / "cat.png")
+        make_video(src / "trip" / "drone.mp4", make="GoPro", model="HERO11")
+        make_video(src / "misc" / "clip.mp4")  # no device metadata -> "Videos"
         (src / "readme.txt").write_text("nope")
 
         # Pre-seed known devices so the naming modal only appears for new ones.
         devices_file = root / "devices.json"
-        devices_file.write_text('{"TestMake iPhone 13": "Test Phone"}', encoding="utf-8")
+        devices_file.write_text(
+            '{"TestMake iPhone 13": "Test Phone", "GoPro HERO11": "My GoPro"}',
+            encoding="utf-8",
+        )
 
         app = PhotoArchApp()
         app.devices_path = devices_file  # never touch the real ~/.config file
@@ -57,8 +84,23 @@ async def main() -> None:
             await asyncio.sleep(1.5)  # let worker threads finish
             await pilot.pause()
             stats = app._stat_values
-            assert stats.get("media") == "3", stats
+            assert stats.get("media") == "5", stats
+            assert stats.get("images") == "3", stats
+            assert stats.get("videos") == "2", stats
             assert stats.get("non_media") == "1", stats
+            assert app._ext_counts == {".jpg": 2, ".png": 1, ".mp4": 2}, app._ext_counts
+            # image formats under Images, video formats under Videos, count desc
+            table = app.query_one("#stats-table")
+            labels = [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+            i_idx = labels.index("📸 Images")
+            img_rows = labels[i_idx + 1 : i_idx + 3]
+            assert any(".jpg" in r for r in img_rows), labels
+            assert any(".png" in r for r in img_rows), labels
+            assert ".jpg" in img_rows[0], labels  # highest count first
+            assert labels[i_idx + 3] == "🎬 Videos", labels
+            v_idx = i_idx + 3
+            assert ".mp4" in labels[v_idx + 1], labels
+            assert labels[v_idx + 2] == "⏭️ Non-media skipped", labels
             assert not dst.exists() or not any(dst.rglob("*")), "dry run wrote files!"
             # switch to the Results tab so the hidden RichLog is laid out
             tabs = app.query_one("#tabs")
@@ -77,11 +119,13 @@ async def main() -> None:
             assert (copied / "beach.jpg").exists(), list(dst.rglob("*"))
             assert (copied / "sunset.jpg").exists()
             # cat.png has no EXIF -> falls back to mtime (current year/month)
-            assert app._stat_values.get("copied") == "3", app._stat_values
+            # drone.mp4 date stays mtime (only device is parsed from the container)
+            assert app._stat_values.get("copied") == "5", app._stat_values
+            assert list(dst.rglob("drone.mp4")), list(dst.rglob("*"))
             # source untouched
             assert (src / "trip" / "beach.jpg").exists()
             assert (src / "readme.txt").exists()
-            print("✅ e2e archive OK (3 files, EXIF date folders)")
+            print("✅ e2e archive OK (5 files, EXIF date folders)")
 
             # --- second archive triggers conflict modal; choose skip ---
             await pilot.click("#btn-archive")
@@ -98,8 +142,8 @@ async def main() -> None:
             await pilot.pause()
             await asyncio.sleep(1.5)
             await pilot.pause()
-            assert app._stat_values.get("conflicts") == "3", app._stat_values
-            assert app._stat_values.get("conflicts_skipped") == "3", app._stat_values
+            assert app._stat_values.get("conflicts") == "5", app._stat_values
+            assert app._stat_values.get("conflicts_skipped") == "5", app._stat_values
             assert not (copied / "beach_1.jpg").exists(), "skip should not add files"
             print("✅ e2e conflict modal OK (skip honored)")
 
@@ -125,12 +169,17 @@ async def main() -> None:
             friendly = dst / "My Pixel" / "2023" / "05"
             assert (friendly / "pixel.jpg").exists(), list(dst.rglob("*"))
             assert (dst / "Test Phone" / "2022" / "08" / "beach.jpg").exists()
+            # video device (pre-seeded friendly name) used for its folder
+            assert list((dst / "My GoPro").rglob("drone.mp4")), list(dst.rglob("*"))
+            # video without device metadata goes to a "Videos" folder
+            assert list((dst / "Videos").rglob("clip.mp4")), list(dst.rglob("*"))
             # naming was mandatory -> JSON now knows the new device
             import json
 
             saved = json.loads(devices_file.read_text(encoding="utf-8"))
             assert saved["TestMake Pixel 9"] == "My Pixel", saved
             assert saved["TestMake iPhone 13"] == "Test Phone", saved
+            assert saved["GoPro HERO11"] == "My GoPro", saved
             print("✅ e2e naming modal OK (friendly folder + JSON saved)")
 
             # --- second run: no naming modal (device now known), conflict modal ---

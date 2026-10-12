@@ -19,10 +19,17 @@ the destination root.
 - `photoarch/archiver.py` — pure logic (no UI): `scan()` builds the plan,
   `apply_resolution(plan, action, dest_root)` applies rename/overwrite/skip,
   `execute()` copies (honors `dry_run`). Keep UI out of this file; it is fully
-  unit-testable headlessly.
+  unit-testable headlessly. `ScanResult` also carries the media statistics
+  (`images`, `videos`, `by_ext` counts) that the app renders.
 - `photoarch/organizer.py` — media extension sets + `FORMATS` dict
   (key → (label, template)). Adding a destination format = one dict entry.
-- `photoarch/metadata.py` — EXIF date/device with mtime/"Unknown device" fallback.
+- `photoarch/metadata.py` — EXIF date/device with mtime fallback; missing device
+  → "Unknown device" for images, **"Videos" for videos** (both are folder
+  labels, never prompted/stored in devices.json).
+  Videos get their **device** from a pure-stdlib ISO-BMFF parser (atom types are
+  exactly 4 bytes: `©mak`/`©mod` in ilst AND as udta strings, plus Apple's
+  `meta/keys` mdta registry — iPhone style); never reads `mdat`, never raises.
+  Video **date** stays mtime.
 - `photoarch/devices.py` — device → friendly-name JSON mapping
   (`~/.config/photoarch/devices.json`, exact-match keys). Tolerant loader
   (missing/corrupt file → `{}`); `save()` returns False on I/O failure.
@@ -62,9 +69,12 @@ the destination root.
 - Device friendly names: the JSON lives OUTSIDE the source tree
   (`~/.config/photoarch/devices.json`, path in `devices.py`). The mapping is
   passed into `scan(source, dest, fmt, device_map)` / `apply_device_names()` —
-  the archiver never reads the file itself. "Unknown device" is never prompted
-  or stored; naming is mandatory for every other new device (empty input =
-  raw name, still stored).
+  the archiver never reads the file itself. "Unknown device" and "Videos" are
+  never prompted or stored; naming is mandatory for every other new device
+  (empty input = raw name, still stored).
+- Media metadata is parsed with **pure stdlib** (struct) — never add
+  ffmpeg/ffprobe or any media library; that applies to video device AND video
+  date (mtime) parsing.
 
 ## Memory
 - When you start, read `MEMORY.md` to understand the project’s status and the decisions that have been made.
