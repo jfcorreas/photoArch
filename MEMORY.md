@@ -25,6 +25,8 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
 - Stats — images/videos rows in STAT_ROWS + dynamic per-extension rows from
   ScanResult.by_ext, grouped under their kind row (IMAGE_EXTS / VIDEO_EXTS,
   count desc). Tests override `app.devices_path` (temp JSON).
+- Installed copy at ~/.local/share/photoArch (photoarch/*.py + requirements.txt
+  + run.sh only; venv built on first run). Re-copy those files after updates.
 ## Lessons Learned and Mistakes to Avoid
 - Changing item.dest_dir after scan invalidates the conflict list — always rebuild
   it via archiver.apply_device_names() (shares _plan_dests with scan()).
