@@ -558,6 +558,34 @@ async def test_settings_missing_folder() -> None:
     print("✅ settings missing folder OK (restored, run validates)")
 
 
+def test_device_sanitize() -> None:
+    """EXIF ASCII fields can be NUL-padded (WA-forwarded jpegs) -> no NULs in names."""
+    from photoarch import metadata
+
+    # control chars (incl. NUL padding) are dropped, everything else kept
+    assert metadata._device_name("Xiaomi\x00\x00", "22101316G\x00") == "Xiaomi 22101316G"
+    assert metadata._device_name("Xiaomi\x00\x00 22101316G", None) == "Xiaomi 22101316G"
+    assert metadata._device_name("GoPro\t", "HERO11\x00") == "GoPro HERO11"
+    # model already containing the make (NUL-padded) -> model alone, sanitized
+    assert metadata._device_name("iPhone\x00", "iPhone 15\x00") == "iPhone 15"
+    assert metadata._device_name("\x00", "\x00") is None  # only padding -> no device
+
+    # end-to-end: a real image whose Make/Model carry NUL padding
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "padded.jpg"
+        img = Image.new("RGB", (4, 4), color=(1, 2, 3))
+        exif = img.getexif()
+        exif[36867] = "2026:10:05 10:56:22"
+        exif[271] = b"Xiaomi\x00\x00\x00"
+        exif[272] = b"22101316G\x00\x00"
+        img.save(p, exif=exif.tobytes())
+        _when, device = metadata.read_capture_info(p)
+        assert device == "Xiaomi 22101316G", repr(device)
+        # and the sanitized name is safe as a path part (no NUL -> mkdir works)
+        assert "\x00" not in str(build_relative_dir("device_year_month", _when, device))
+        print("✅ device sanitize OK")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
@@ -565,6 +593,7 @@ def main() -> None:
     test_devices_json()
     test_settings_json()
     test_device_mapping()
+    test_device_sanitize()
     test_video_device()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())

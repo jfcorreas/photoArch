@@ -36,9 +36,21 @@ def _parse_dt(value: object) -> Optional[datetime]:
     return None
 
 
+def _sanitize_exif_str(value: object) -> str:
+    """Stringify an EXIF value, dropping control characters.
+
+    Real-world EXIF ASCII fields are fixed-width and NUL-padded
+    (e.g. WhatsApp-forwarded jpegs: "Xiaomi\\x00\\x00..."); ".strip()"
+    alone does not remove \\x00, which would end up in folder names.
+    """
+    if not value:
+        return ""
+    return "".join(c for c in str(value) if c >= " ").strip()
+
+
 def _device_name(make: object, model: object) -> Optional[str]:
-    make_s = str(make).strip() if make else ""
-    model_s = str(model).strip() if model else ""
+    make_s = _sanitize_exif_str(make)
+    model_s = _sanitize_exif_str(model)
     if model_s and make_s:
         if model_s.lower().startswith(make_s.lower()):
             return model_s

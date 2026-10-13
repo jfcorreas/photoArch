@@ -1,11 +1,10 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.4: TUI archives photos/videos by EXIF date+device; new devices get a user-chosen
-  friendly name reused on later runs; Devices tab renames/removes known devices.
-  Videos get their device from a pure ISO-BMFF parser; stats show images/videos
-  counts with their formats. Last-used source/dest/format/conflict policy are
-  persisted in ~/.config/photoarch/settings.json and restored on launch.
+- v0.1.4: TUI archives photos/videos by EXIF date+device; devices get user-chosen
+  friendly names reused later (Devices tab renames/removes). Videos get their device
+  from a pure ISO-BMFF parser; stats show images/videos counts + formats. Last-used
+  source/dest/format/conflict persisted in ~/.config/photoarch/settings.json.
 ## Decisions (and why)
 - Easy to run. Exec only with run.sh.
 - Conflict granularity — the dialog resolves all conflicts with one action ("Apply to all"); per-file decisions are not offered (kept it simple).
@@ -23,10 +22,10 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   even for formats without {device} and during dry run (naming mandatory; empty
   input = raw name, still stored). Editing the JSON later does not migrate
   already-created folders.
-- Devices panel — new tab; save/remove rewrite devices.json (file is the truth:
-  table reloads on tab activation and after the naming modal saves). Remove →
-  device re-prompted on next run; rename never moves folders of earlier runs
-  (hint in tab). Mapping is read at run start → mid-run edits apply next run.
+- Devices panel — save/remove rewrite devices.json (file is the truth: table
+  reloads on tab activation and after the naming modal saves). Remove → device
+  re-prompted next run; rename never moves folders of earlier runs. Mapping is
+  read at run start → mid-run edits apply next run.
 - Stats — images/videos rows + dynamic per-extension rows from ScanResult.by_ext,
   grouped under their kind row (count desc). Tests override `app.devices_path`.
 - Settings — settings.json in ~/.config/photoarch (same tolerant pattern as
@@ -49,5 +48,9 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   after explicit heights on #tabs + its ContentSwitcher; #content width:100% laid the
   content out wider than the screen (buttons unclickable) → changed to 1fr.
 - Any test creating PhotoArchApp must override settings_path (before run_test).
+- EXIF ASCII fields are fixed-width and NUL-padded (WA-forwarded jpegs) —
+  .strip() doesn't remove \x00; sanitize in metadata._device_name (control
+  chars dropped) or folder names get NULs and mkdir raises ValueError
+  (archiver catches only OSError).
 ## Next Steps
 - (blank for now)
