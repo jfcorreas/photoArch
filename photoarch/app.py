@@ -270,8 +270,18 @@ class PhotoArchApp(App):
     #sidebar Label { width: 100%; }
     #sidebar Select { width: 100%; margin-bottom: 1; }
     #sidebar RadioSet { width: 100%; }
-    #sidebar Button { width: 100%; margin-bottom: 1; }
-    .section { margin-top: 1; text-style: bold; color: $accent; }
+    #sidebar Button { width: 100%; height: 1; border: none; padding: 0 1; margin: 1 0 1 0; }
+    .section { text-style: bold; color: $accent; }
+    #clear-cold { display: none; }
+    #app-title {
+        background: $accent;   /* #fea62b amber, follows theme */
+        color: $surface;       /* dark text — good contrast on amber */
+        text-style: bold;
+        height: 1;
+        width: 100%;
+        content-align: center middle;
+        margin-bottom: 1;
+    }
 
     #content { padding: 1 2; width: 1fr; }
     #path-summary { height: auto; margin-bottom: 1; }
@@ -429,6 +439,7 @@ class PhotoArchApp(App):
         if cfg["cold_dest"]:
             self._cold = Path(cfg["cold_dest"])
             self.query_one("#pick-cold", Button).label = f"🗄️  {self._cold}"
+        self._update_clear_cold()
         self.query_one("#fmt-select", Select).value = cfg["format"]
         radio_id = {
             "ask": "cf-ask",
@@ -437,6 +448,10 @@ class PhotoArchApp(App):
             "skip": "cf-skip",
         }[cfg["conflict"]]
         self.query_one(f"#{radio_id}", RadioButton).value = True
+
+    def _update_clear_cold(self) -> None:
+        """Show the clear button only when a cold folder is set (saves 4 rows)."""
+        self.query_one("#clear-cold", Button).display = self._cold is not None
 
     def _save_settings(self) -> None:
         """Persist the current folders/format/conflict (called on run start)."""
@@ -604,11 +619,13 @@ class PhotoArchApp(App):
                 if path is not None:
                     self._cold = path
                     event.button.label = f"🗄️  {path}"
+                    self._update_clear_cold()
                     self._update_summary()
             self.push_screen(DirectoryScreen(self._cold), got_cold)
         elif bid == "clear-cold":
             self._cold = None
             self.query_one("#pick-cold", Button).label = "🗄️  Select cold storage folder…"
+            self._update_clear_cold()
             self._update_summary()
         elif bid == "btn-dry":
             self.action_dry_run()

@@ -22,15 +22,18 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   empty input = raw name). Editing JSON later does not migrate folders. Panel:
   save/remove rewrite the file; remove → re-prompted next run; mapping read at run start.
 - Stats — images/videos rows + per-extension rows from ScanResult.by_ext (count desc).
-  Tests override `app.devices_path`.
-- Settings — restored in on_mount (vanished folder kept as-is, validated at run), saved
-  ONLY when a run starts after path validation. Tests override `app.settings_path`
-  BEFORE run_test.
+  Tests override `app.devices_path`. Settings — restored in on_mount (vanished folder
+  kept as-is, validated at run), saved ONLY on run start after path validation;
+  tests override `app.settings_path` BEFORE run_test.
 - Cold storage — validated before mkdir (never inside source, never equal/nested with
   primary); ONE scan vs primary, cold plan rebuilt via apply_device_names (no 2nd walk);
   combined dialog, action applied per root independently (per-dest suffixes); dry run
   mirrors primary; stats = primary rows + cold_copies/cold_bytes. Source IS read once
   per destination at copy time — FUTURE OPTIMIZATION: read once, fan out bytes.
+- Sidebar is compact by design: flat 1-row buttons (`border: none`), no section
+  margins, #clear-cold shown only while cold is set, and #app-title is a filled
+  `$accent` banner (must fit ~32-row terminals without scrolling — don't
+  reintroduce 3-row bordered buttons).
 - Installed copy at ~/.local/share/photoArch (photoarch/*.py + requirements.txt +
   run.sh). Re-copy after updates.
 ## Lessons Learned and Mistakes to Avoid
@@ -41,7 +44,9 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
 - MP4 atom types are EXACTLY 4 bytes ("©mod", never "©modl"), and `meta` carries
   4 version/flags bytes before its children — both cost real debugging time.
 - Pilot: repeat clicks within Button.active_effect_duration (0.2s) are ignored —
-  pause(0.25) after clicks. DataTable RowKey: use row_key.value, not str().
+  pause(0.25) after clicks. Toggling a widget's `display` reflows the sidebar: a
+  click in the same frame hits its OLD coordinates (btn-dry instead of
+  btn-archive) — pause after relayout changes too. DataTable: use row_key.value.
 - Any test creating PhotoArchApp must override settings_path (before run_test).
 - EXIF ASCII fields are NUL-padded (WA jpegs) — .strip() won't remove \x00;
   sanitize in metadata._device_name or mkdir raises ValueError.

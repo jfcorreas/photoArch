@@ -287,6 +287,8 @@ async def test_cold_storage() -> None:
             app._source = src
             app._dest = dst
             app._cold = cold
+            app._update_clear_cold()  # picker callback does this; test sets _cold directly
+            await pilot.pause()  # let the reflow (clear button appearing) settle before clicks
             app.query_one("#fmt-select", Select).value = "year_month"
 
             # --- real archive copies to BOTH destinations ---

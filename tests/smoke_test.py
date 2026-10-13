@@ -516,6 +516,8 @@ async def test_settings_restore() -> None:
             assert app._dest == dst, app._dest
             assert app._cold == cold, app._cold
             assert str(cold) in str(app.query_one("#pick-cold").label)
+            # clear button only visible while a cold folder is set (compact sidebar)
+            assert app.query_one("#clear-cold").display is True
             assert str(app.query_one("#fmt-select", Select).value) == "year_month_day"
             assert app.query_one("#cf-overwrite", RadioButton).value is True
 
@@ -523,6 +525,7 @@ async def test_settings_restore() -> None:
             await pilot.click("#clear-cold")
             await pilot.pause(0.25)
             assert app._cold is None
+            assert app.query_one("#clear-cold").display is False
 
             # changing widgets does NOT save yet (save happens on run start)
             app.query_one("#fmt-select", Select).value = "device_year_month"
