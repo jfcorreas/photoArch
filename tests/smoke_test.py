@@ -586,6 +586,63 @@ def test_device_sanitize() -> None:
         print("✅ device sanitize OK")
 
 
+def test_whatsapp_files() -> None:
+    """WA-named files: date from the filename, device 'WhatsApp', no metadata read."""
+    from datetime import datetime as dt
+
+    from photoarch import metadata
+
+    # generic pattern: any prefix, case-insensitive, at the end of the stem
+    assert metadata._WA_NAME_RE.search("IMG-20260925-WA0000")
+    assert metadata._WA_NAME_RE.search("VID-20261011-WA0000")
+    assert metadata._WA_NAME_RE.search("GIF-20260101-WA0001")
+    assert metadata._WA_NAME_RE.search("img-20260925-wa0000")  # lowercase
+    assert not metadata._WA_NAME_RE.search("IMG_20260925_170640")  # camera name
+    assert not metadata._WA_NAME_RE.search("IMG-20260925-WA0000-copy")
+    assert metadata._whatsapp_date(Path("IMG-20260925-WA0000.jpg")) == dt(2026, 9, 25)
+    assert metadata._whatsapp_date(Path("IMG-20261340-WA0000.jpg")) is None  # bad date
+    assert metadata._whatsapp_date(Path("IMG_20260925_170640.jpg")) is None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        # WA image WITH full EXIF -> filename wins, metadata never consulted
+        wa_img = root / "IMG-20261005-WA0004.jpg"
+        make_photo(wa_img, "2020:01:02 03:04:05", "Pixel 7")
+        when, device = metadata.read_capture_info(wa_img)
+        assert (when, device) == (dt(2026, 10, 5), "WhatsApp"), (when, device)
+
+        # WA video WITH device atoms -> still skipped, label wins
+        wa_vid = root / "VID-20260813-WA0002.mp4"
+        make_video(wa_vid, make="GoPro", model="HERO11")
+        when, device = metadata.read_capture_info(wa_vid)
+        assert (when, device) == (dt(2026, 8, 13), "WhatsApp"), (when, device)
+
+        # garbage date in the name -> mtime fallback, still WhatsApp
+        bad = root / "IMG-20261340-WA0000.jpg"
+        make_photo(bad)
+        when, device = metadata.read_capture_info(bad)
+        assert device == "WhatsApp" and when is not None
+        assert abs((datetime.now() - when).total_seconds()) < 3600  # ~mtime
+
+        # scan: WA files land in WhatsApp/<YYYY>/<MM>, never prompted
+        src = root / "src"
+        make_photo(src / "IMG-20260925-WA0000.jpg")
+        make_video(src / "VID-20260813-WA0002.mp4")
+        make_photo(src / "normal.jpg", "2021:03:14 10:00:00", "Pixel 7")
+        plan = archiver.scan(src, root / "dst", "device_year_month", {})
+        by_name = {i.src.name: i for i in plan.items}
+        assert str(by_name["IMG-20260925-WA0000.jpg"].dest_dir).startswith("WhatsApp/2026/09")
+        assert str(by_name["VID-20260813-WA0002.mp4"].dest_dir).startswith("WhatsApp/2026/08")
+        assert "WhatsApp" not in plan.unknown_devices, plan.unknown_devices
+        assert plan.unknown_devices == ["TestMake Pixel 7"], plan.unknown_devices
+        # manual devices.json override is still honored (like the other labels)
+        plan2 = archiver.scan(src, root / "dst", "device_year_month", {"WhatsApp": "WA 2026"})
+        by_name2 = {i.src.name: i for i in plan2.items}
+        assert str(by_name2["IMG-20260925-WA0000.jpg"].dest_dir).startswith("WA 2026/2026/09")
+        print("✅ whatsapp files OK")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
@@ -594,6 +651,7 @@ def main() -> None:
     test_settings_json()
     test_device_mapping()
     test_device_sanitize()
+    test_whatsapp_files()
     test_video_device()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())

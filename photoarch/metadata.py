@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import struct
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,11 @@ _EPOCH = datetime(1970, 1, 1)
 # Folder labels used when metadata has no device (both never prompted/stored)
 UNKNOWN_DEVICE = "Unknown device"  # images without EXIF
 VIDEOS_DEVICE = "Videos"  # videos without device metadata (e.g. Xiaomi)
+WHATSAPP_DEVICE = "WhatsApp"  # files named *-YYYYMMDD-WA#### (never prompted)
+
+# WhatsApp renames media on save: IMG-20260925-WA0000.jpg, VID-20261011-WA0000.mp4…
+# Generic: any prefix, 8-digit date, -WA + 4 digits at the end of the stem.
+_WA_NAME_RE = re.compile(r"-(\d{8})-WA\d{4}$", re.IGNORECASE)
 
 
 def _parse_dt(value: object) -> Optional[datetime]:
@@ -228,14 +234,47 @@ def read_video_device(path: Path) -> Optional[str]:
     return _device_name(make, model)
 
 
+def _whatsapp_date(path: Path) -> Optional[datetime]:
+    """Capture date embedded in a WhatsApp filename, or None.
+
+    Matches "*-YYYYMMDD-WA####" anywhere in the stem (IMG-, VID-, GIF-…).
+    An unparseable date (e.g. month 40) yields None -> caller falls back
+    to mtime; the file is still treated as WhatsApp media.
+    """
+    m = _WA_NAME_RE.search(path.stem)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d")
+    except ValueError:
+        return None
+
+
+def read_mtime(path: Path) -> datetime:
+    """File modification time (epoch on OSError)."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return _EPOCH
+
+
 def read_capture_info(path: Path) -> tuple[datetime, str]:
     """Return (capture date, device name).
 
+    WhatsApp-named files (*-YYYYMMDD-WA####) skip metadata parsing entirely:
+    their date comes from the filename (mtime fallback) and their device is
+    the fixed "WhatsApp" label — no EXIF/atom read at all.
     Falls back to file modification time when the file has no usable date.
     Images are read via Pillow/EXIF; videos try a pure ISO-BMFF device parse
     (no ffprobe); their date stays mtime. Missing device -> "Unknown device"
     for images, "Videos" for videos (folder label, never prompted).
     """
+    wa_date = _whatsapp_date(path)
+    if wa_date is not None or _WA_NAME_RE.search(path.stem):
+        # WA file: date from name (or mtime if the name date is garbage);
+        # metadata is never read — WA strips it in ~85% of files anyway.
+        return (wa_date or read_mtime(path)), WHATSAPP_DEVICE
+
     when: Optional[datetime] = None
     device: Optional[str] = None
 
@@ -260,10 +299,7 @@ def read_capture_info(path: Path) -> tuple[datetime, str]:
         device = read_video_device(path)
 
     if when is None:
-        try:
-            when = datetime.fromtimestamp(path.stat().st_mtime)
-        except OSError:
-            when = _EPOCH
+        when = read_mtime(path)
 
     if device:
         return when, device

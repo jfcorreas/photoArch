@@ -26,6 +26,9 @@ the destination root.
 - `photoarch/metadata.py` — EXIF date/device with mtime fallback; missing device
   → "Unknown device" for images, **"Videos" for videos** (both are folder
   labels, never prompted/stored in devices.json).
+  WhatsApp-named files (`*-YYYYMMDD-WA####`, generic regex on the stem) skip
+  metadata entirely: date from the filename (mtime fallback), device
+  **"WhatsApp"** (also a never-prompted label, for both images and videos).
   Videos get their **device** from a pure-stdlib ISO-BMFF parser (atom types are
   exactly 4 bytes: `©mak`/`©mod` in ilst AND as udta strings, plus Apple's
   `meta/keys` mdta registry — iPhone style); never reads `mdat`, never raises.
@@ -73,9 +76,12 @@ the destination root.
 - Device friendly names: the JSON lives OUTSIDE the source tree
   (`~/.config/photoarch/devices.json`, path in `devices.py`). The mapping is
   passed into `scan(source, dest, fmt, device_map)` / `apply_device_names()` —
-  the archiver never reads the file itself. "Unknown device" and "Videos" are
-  never prompted or stored; naming is mandatory for every other new device
-  (empty input = raw name, still stored).
+  the archiver never reads the file itself. "Unknown device", "Videos" and
+  "WhatsApp" are never prompted or stored; naming is mandatory for every other
+  new device (empty input = raw name, still stored).
+- WhatsApp-named files (`*-YYYYMMDD-WA####`, generic regex on the stem) skip
+  metadata parsing entirely: date comes from the filename (mtime fallback),
+  device is the fixed "WhatsApp" label — never read EXIF/atoms for them.
 - Last-used settings (`settings.py`, same `~/.config/photoarch/` rule): loaded
   in `on_mount` (tests override `app.settings_path` **before** `run_test`),
   saved only when a run starts, after path validation. The archiver never

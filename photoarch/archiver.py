@@ -19,6 +19,7 @@ from .organizer import IMAGE_EXTS, MEDIA_EXTS, VIDEO_EXTS, build_relative_dir
 # metadata.py fallback labels; never prompted/stored in devices.json
 UNKNOWN_DEVICE = metadata.UNKNOWN_DEVICE
 VIDEOS_DEVICE = metadata.VIDEOS_DEVICE
+WHATSAPP_DEVICE = metadata.WHATSAPP_DEVICE
 
 
 @dataclass
@@ -92,7 +93,7 @@ def scan(
 
     device_map: raw device name -> friendly name (from devices.py). Devices
     not present in the mapping are collected in result.unknown_devices
-    (except the "Unknown device"/"Videos" fallback labels).
+    (except the "Unknown device"/"Videos"/"WhatsApp" fallback labels).
     """
     result = ScanResult()
     mapping = device_map or {}
@@ -128,7 +129,7 @@ def scan(
                 result.videos += 1
 
             if (
-                device not in (UNKNOWN_DEVICE, VIDEOS_DEVICE)
+                device not in (UNKNOWN_DEVICE, VIDEOS_DEVICE, WHATSAPP_DEVICE)
                 and device not in mapping
                 and device not in result.unknown_devices
             ):
