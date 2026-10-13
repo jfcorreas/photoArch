@@ -111,18 +111,19 @@ class DirectoryScreen(ModalScreen[Optional[Path]]):
 # --------------------------------------------------------------------------
 
 class ConflictScreen(ModalScreen[str]):
-    """Shows all conflicts and asks the user what to do.
+    """Shows all conflicts (across every destination) and asks what to do.
 
-    Returns "rename", "overwrite", "skip" or "cancel".
+    groups: list of (dest_root, conflicts) — one entry per destination
+    (primary, and cold storage when set). Returns "rename", "overwrite",
+    "skip" or "cancel"; the choice is applied independently per destination.
     """
 
-    def __init__(self, conflicts: list[archiver.Conflict], dest_root: Path) -> None:
+    def __init__(self, groups: list[tuple[Path, list[archiver.Conflict]]]) -> None:
         super().__init__()
-        self.conflicts = conflicts
-        self.dest_root = dest_root
+        self.groups = groups
 
     def compose(self) -> ComposeResult:
-        count = len(self.conflicts)
+        count = sum(len(conflicts) for _root, conflicts in self.groups)
         plural = "s" if count != 1 else ""
         yield Vertical(
             Label(f"⚠️  {count} conflict{plural} at destination", id="conflict-title"),
@@ -145,10 +146,11 @@ class ConflictScreen(ModalScreen[str]):
     def on_mount(self) -> None:
         table = self.query_one("#conflict-table", DataTable)
         table.add_columns("📄 Source file", "📁 Destination", "🔎 Reason")
-        for c in self.conflicts:
-            dest = self.dest_root / c.item.dest_dir / c.item.name
-            reason = "exists at destination" if c.dest_exists else "duplicate in batch"
-            table.add_row(c.item.src.name, str(dest), reason)
+        for root, conflicts in self.groups:
+            for c in conflicts:
+                dest = root / c.item.dest_dir / c.item.name
+                reason = "exists at destination" if c.dest_exists else "duplicate in batch"
+                table.add_row(c.item.src.name, str(dest), reason)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "conflict-apply":
@@ -233,6 +235,8 @@ STAT_ROWS = [
     ("✅ Files copied", "copied"),
     ("📁 Folders created", "folders"),
     ("💾 Data copied", "bytes"),
+    ("🗄️ Cold copies", "cold_copies"),
+    ("🗄️ Cold storage bytes", "cold_bytes"),
     ("", None),
     ("⚠️ Conflicts detected", "conflicts"),
     ("⏭️ Conflicts skipped", "conflicts_skipped"),
@@ -331,6 +335,7 @@ class PhotoArchApp(App):
         super().__init__()
         self._source: Optional[Path] = None
         self._dest: Optional[Path] = None
+        self._cold: Optional[Path] = None  # optional second destination (cold storage)
         self._stat_values: dict[str, str] = {}
         # media counts per extension, rendered as extra rows in the stats table
         self._ext_counts: dict[str, int] = {}
@@ -352,6 +357,9 @@ class PhotoArchApp(App):
                 yield Button("📁  Select source folder…", id="pick-source")
                 yield Label("🎯  Destination folder", classes="section")
                 yield Button("📁  Select destination folder…", id="pick-dest")
+                yield Label("🗄️  Cold Storage (optional 2nd copy)", classes="section")
+                yield Button("🗄️  Select cold storage folder…", id="pick-cold")
+                yield Button("✖  Clear cold storage", id="clear-cold")
                 yield Label("🗂️  Destination folder format", classes="section")
                 yield Select(
                     [(label, key) for key, (label, _tpl) in FORMATS.items()],
@@ -418,6 +426,9 @@ class PhotoArchApp(App):
         if cfg["dest"]:
             self._dest = Path(cfg["dest"])
             self.query_one("#pick-dest", Button).label = f"📁  {self._dest}"
+        if cfg["cold_dest"]:
+            self._cold = Path(cfg["cold_dest"])
+            self.query_one("#pick-cold", Button).label = f"🗄️  {self._cold}"
         self.query_one("#fmt-select", Select).value = cfg["format"]
         radio_id = {
             "ask": "cf-ask",
@@ -434,6 +445,7 @@ class PhotoArchApp(App):
         data = {
             "source": str(self._source) if self._source else "",
             "dest": str(self._dest) if self._dest else "",
+            "cold_dest": str(self._cold) if self._cold else "",
             "format": str(self.query_one("#fmt-select", Select).value),
             "conflict": {
                 "cf-ask": "ask",
@@ -497,6 +509,7 @@ class PhotoArchApp(App):
         self.query_one("#path-summary", Static).update(
             f"📂 Source: [bold]{self._source or '—'}[/bold]\n"
             f"🎯 Destination: [bold]{self._dest or '—'}[/bold]\n"
+            f"🗄️ Cold storage: [bold]{self._cold or '— (none)'}[/bold]\n"
             f"🗂️ Format: [bold]{label}[/bold]"
         )
 
@@ -586,6 +599,17 @@ class PhotoArchApp(App):
                     event.button.label = f"📁  {path}"
                     self._update_summary()
             self.push_screen(DirectoryScreen(self._dest), got_dest)
+        elif bid == "pick-cold":
+            def got_cold(path: Optional[Path]) -> None:
+                if path is not None:
+                    self._cold = path
+                    event.button.label = f"🗄️  {path}"
+                    self._update_summary()
+            self.push_screen(DirectoryScreen(self._cold), got_cold)
+        elif bid == "clear-cold":
+            self._cold = None
+            self.query_one("#pick-cold", Button).label = "🗄️  Select cold storage folder…"
+            self._update_summary()
         elif bid == "btn-dry":
             self.action_dry_run()
         elif bid == "btn-archive":
@@ -623,6 +647,27 @@ class PhotoArchApp(App):
             self.notify("⚠️ Destination must not be inside the source folder.", severity="error")
             return
 
+        # optional cold storage: same restrictions as the primary destination
+        cold_r: Optional[Path] = None
+        if self._cold is not None:
+            cold = self._cold.expanduser()
+            cold_r = cold.resolve()
+            # validate BEFORE mkdir so a rejected path never touches the source tree
+            if cold_r == src_r or src_r in cold_r.parents:
+                self.notify("⚠️ Cold storage must not be inside the source folder.", severity="error")
+                return
+            if cold_r == dst_r or dst_r in cold_r.parents or cold_r in dst_r.parents:
+                self.notify(
+                    "⚠️ Cold storage must differ from the destination and not contain it (or be inside it).",
+                    severity="error",
+                )
+                return
+            try:
+                cold.mkdir(parents=True, exist_ok=True)  # mirror primary (also on dry run)
+            except OSError as exc:
+                self.notify(f"⚠️ Cannot create cold storage: {exc}", severity="error")
+                return
+
         self._save_settings()  # run started -> remember for the next launch
 
         fmt = str(self.query_one("#fmt-select", Select).value)
@@ -636,17 +681,30 @@ class PhotoArchApp(App):
         self._set_stat("dest", str(dst_r))
         self._set_stat("format", FORMATS.get(fmt, next(iter(FORMATS.values())))[0])
         self.notify("🔎 Scanning source folder…")
-        self._scan_and_plan(src_r, dst_r, fmt, dry_run, device_map)
+        self._scan_and_plan(src_r, dst_r, cold_r, fmt, dry_run, device_map)
 
     @work(thread=True, exclusive=True, group="archive")
     def _scan_and_plan(
-        self, src: Path, dst: Path, fmt: str, dry_run: bool, device_map: dict[str, str]
+        self,
+        src: Path,
+        dst: Path,
+        cold: Optional[Path],
+        fmt: str,
+        dry_run: bool,
+        device_map: dict[str, str],
     ) -> None:
+        # Scan once against the primary destination (cold reuses these items)
         plan = archiver.scan(src, dst, fmt, device_map)
-        self.app.call_from_thread(self._after_scan, plan, dst, fmt, dry_run)
+        self.app.call_from_thread(self._after_scan, plan, dst, cold, fmt, dry_run, device_map)
 
     def _after_scan(
-        self, plan: archiver.ScanResult, dst: Path, fmt: str, dry_run: bool
+        self,
+        plan: archiver.ScanResult,
+        dst: Path,
+        cold: Optional[Path],
+        fmt: str,
+        dry_run: bool,
+        device_map: dict[str, str],
     ) -> None:
         for err in plan.errors:
             self._log_error(err)
@@ -658,9 +716,7 @@ class PhotoArchApp(App):
         self._ext_counts = dict(plan.by_ext)
         self._render_stats()
         self._set_stat("planned", str(len(plan.items)))
-        self._set_stat("folders", str(plan.folders_to_create))
         self._set_stat("bytes", human_size(plan.total_size))
-        self._set_stat("conflicts", str(len(plan.conflicts)))
 
         if not plan.items:
             self.notify("ℹ️ No media files found in the source folder.", severity="information")
@@ -668,18 +724,20 @@ class PhotoArchApp(App):
 
         if plan.unknown_devices:
             def got(mapping: Optional[dict[str, str]]) -> None:
-                self._after_device_names(plan, dst, fmt, dry_run, mapping)
+                self._after_device_names(plan, dst, cold, fmt, dry_run, device_map, mapping)
             self.push_screen(DeviceNamingScreen(plan.unknown_devices), got)
             return
 
-        self._resolve_conflicts(plan, dst, dry_run)
+        self._begin_resolution(plan, device_map, fmt, dst, cold, dry_run)
 
     def _after_device_names(
         self,
         plan: archiver.ScanResult,
         dst: Path,
+        cold: Optional[Path],
         fmt: str,
         dry_run: bool,
+        device_map: dict[str, str],
         mapping: Optional[dict[str, str]],
     ) -> None:
         if mapping is None:
@@ -692,58 +750,114 @@ class PhotoArchApp(App):
                 f"⚠️ Could not save {self.devices_path}; names apply to this run only."
             )
         self._refresh_devices_table()  # Devices tab may be open behind the modal
-        # dest_dir changes -> rebuild conflicts/folder count with friendly names
-        plan = archiver.apply_device_names(plan, merged, fmt, dst)
-        self._set_stat("folders", str(plan.folders_to_create))
-        self._resolve_conflicts(plan, dst, dry_run)
+        # dest_dir changes -> rebuild both destinations with friendly names
+        self._begin_resolution(plan, merged, fmt, dst, cold, dry_run)
+
+    def _begin_resolution(
+        self,
+        raw_plan: archiver.ScanResult,
+        device_map: dict[str, str],
+        fmt: str,
+        dst: Path,
+        cold: Optional[Path],
+        dry_run: bool,
+    ) -> None:
+        """Build one plan per destination (reusing the scanned items) and resolve.
+
+        apply_device_names recomputes dest_dir from the friendly names AND
+        rebuilds the conflict list against the given root — so each destination
+        gets its own conflicts without re-walking the source.
+        """
+        roots = [dst] + ([cold] if cold is not None else [])
+        targets = [
+            (archiver.apply_device_names(raw_plan, device_map, fmt, root), root)
+            for root in roots
+        ]
+        self._set_stat("folders", str(targets[0][0].folders_to_create))  # primary
+        self._set_stat(
+            "conflicts", str(sum(len(plan.conflicts) for plan, _root in targets))
+        )
+        self._resolve_conflicts(targets, dry_run)
 
     def _resolve_conflicts(
-        self, plan: archiver.ScanResult, dst: Path, dry_run: bool
+        self, targets: list[tuple[archiver.ScanResult, Path]], dry_run: bool
     ) -> None:
-        if plan.conflicts:
+        groups = [(root, plan.conflicts) for plan, root in targets if plan.conflicts]
+        if groups:
             policy = self.query_one("#conflict-policy", RadioSet).pressed_button
             policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
             if policy_id == "cf-ask":
                 def got(action: str) -> None:
-                    self._after_conflicts(plan, dst, dry_run, action)
-                self.push_screen(ConflictScreen(plan.conflicts, dst), got)
+                    self._after_conflicts(targets, dry_run, action)
+                self.push_screen(ConflictScreen(groups), got)
                 return
             action = {"cf-rename": "rename", "cf-overwrite": "overwrite", "cf-skip": "skip"}[policy_id]
         else:
             action = "rename"  # no conflicts; action is irrelevant
-        self._after_conflicts(plan, dst, dry_run, action)
+        self._after_conflicts(targets, dry_run, action)
 
     def _after_conflicts(
-        self, plan: archiver.ScanResult, dst: Path, dry_run: bool, action: str
+        self, targets: list[tuple[archiver.ScanResult, Path]], dry_run: bool, action: str
     ) -> None:
         if action == "cancel":
             self.notify("🚫 Operation cancelled by user.")
             return
         try:
-            resolved = archiver.apply_resolution(plan, action, dst)
+            resolved = [
+                (archiver.apply_resolution(plan, action, root), root)
+                for plan, root in targets
+            ]
         except ValueError:
             self.notify("⚠️ Unknown conflict action.", severity="error")
             return
         if action == "skip":
-            self._set_stat("conflicts_skipped", str(len(plan.conflicts)))
-        self._do_copy(resolved, dst, dry_run)
+            # skipped across every destination (a file can conflict in one root only)
+            self._set_stat(
+                "conflicts_skipped",
+                str(sum(len(plan.conflicts) for plan, _root in targets)),
+            )
+        self._do_copy(resolved, dry_run)
 
     @work(thread=True, exclusive=True, group="archive")
-    def _do_copy(self, plan: archiver.ScanResult, dst: Path, dry_run: bool) -> None:
-        report = archiver.execute(plan, dst, dry_run, on_progress=self._progress_from_thread)
-        self.app.call_from_thread(self._after_copy, report, dry_run)
+    def _do_copy(
+        self,
+        resolved: list[tuple[archiver.ScanResult, Path]],
+        dry_run: bool,
+    ) -> None:
+        reports = [
+            archiver.execute(plan, root, dry_run, on_progress=self._progress_from_thread)
+            for plan, root in resolved
+        ]
+        primary = reports[0]
+        cold_report = reports[1] if len(reports) > 1 else None
+        self.app.call_from_thread(self._after_copy, primary, cold_report, dry_run)
 
     def _progress_from_thread(self, message: str, kind: str) -> None:
         self.app.call_from_thread(self._log, message, kind)
 
-    def _after_copy(self, report: archiver.CopyReport, dry_run: bool) -> None:
-        for _src, err in report.errors:
-            self._log_error(err)
+    def _after_copy(
+        self,
+        report: archiver.CopyReport,
+        cold_report: Optional[archiver.CopyReport],
+        dry_run: bool,
+    ) -> None:
+        for r in (report, cold_report):
+            if r is None:
+                continue
+            for _src, err in r.errors:
+                self._log_error(err)
+        # existing rows reflect the primary destination (option b)
         self._set_stat("copied", str(report.copied))
         self._set_stat("folders", str(report.folders_created))
         self._set_stat("bytes", human_size(report.bytes_copied))
-        self._set_stat("errors", str(len(report.errors)))
-        if dry_run:
-            self.notify(f"🧪 Dry run complete — {report.copied} files would be copied.")
-        else:
-            self.notify(f"📦 Archive complete — {report.copied} files copied.")
+        total_errors = len(report.errors) + (len(cold_report.errors) if cold_report else 0)
+        self._set_stat("errors", str(total_errors))
+        if cold_report is not None:
+            self._set_stat("cold_copies", str(cold_report.copied))
+            self._set_stat("cold_bytes", human_size(cold_report.bytes_copied))
+        verb = "would be copied" if dry_run else "copied"
+        icon = "🧪" if dry_run else "📦"
+        msg = f"{icon} {'Dry run complete' if dry_run else 'Archive complete'} — {report.copied} files {verb}"
+        if cold_report is not None:
+            msg += f" (+{cold_report.copied} to cold storage)"
+        self.notify(msg + ".")

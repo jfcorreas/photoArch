@@ -18,7 +18,7 @@ from .organizer import FORMATS
 
 SETTINGS_FILE = APP_CONFIG_DIR / "settings.json"
 
-DEFAULTS = {"source": "", "dest": "", "format": "year_month", "conflict": "ask"}
+DEFAULTS = {"source": "", "dest": "", "cold_dest": "", "format": "year_month", "conflict": "ask"}
 
 # conflict policy values, matching the sidebar RadioSet options
 CONFLICT_ACTIONS = ("ask", "rename", "overwrite", "skip")
@@ -38,12 +38,10 @@ def load(path: Path = SETTINGS_FILE) -> dict[str, str]:
     if not isinstance(data, dict):
         return dict(DEFAULTS)
     out = dict(DEFAULTS)
-    source = data.get("source")
-    dest = data.get("dest")
-    if isinstance(source, str) and source:
-        out["source"] = source
-    if isinstance(dest, str) and dest:
-        out["dest"] = dest
+    for key in ("source", "dest", "cold_dest"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
     if data.get("format") in FORMATS:
         out["format"] = str(data["format"])
     if data.get("conflict") in CONFLICT_ACTIONS:
@@ -59,6 +57,7 @@ def save(settings: dict[str, str], path: Path = SETTINGS_FILE) -> bool:
     payload = {
         "source": str(settings.get("source", "")),
         "dest": str(settings.get("dest", "")),
+        "cold_dest": str(settings.get("cold_dest", "")),
         "format": str(fmt) if fmt in FORMATS else DEFAULTS["format"],
         "conflict": str(conflict) if conflict in CONFLICT_ACTIONS else DEFAULTS["conflict"],
     }

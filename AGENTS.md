@@ -37,13 +37,18 @@ the destination root.
   (`~/.config/photoarch/devices.json`, exact-match keys). Tolerant loader
   (missing/corrupt file → `{}`); `save()` returns False on I/O failure.
 - `photoarch/settings.py` — last-used run settings JSON
-  (`~/.config/photoarch/settings.json`: source, dest, format, conflict policy).
-  Same tolerant load/save pattern; invalid values fall back to defaults.
+  (`~/.config/photoarch/settings.json`: source, dest, cold_dest, format, conflict
+  policy; `cold_dest:""` = no cold storage). Same tolerant load/save pattern;
+  invalid values fall back to defaults.
 - `photoarch/app.py` — the TUI: `DirectoryScreen` (folder picker modal),
-  `ConflictScreen` (returns "rename"/"overwrite"/"skip"/"cancel"),
+  `ConflictScreen` (takes `groups: list[(dest_root, conflicts)]`, returns
+  "rename"/"overwrite"/"skip"/"cancel"),
   `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
   Devices tab (rename/remove known devices; writes only `devices.json`),
-  `PhotoArchApp`.
+  `PhotoArchApp`. Cold storage = optional 2nd destination: ONE scan against the
+  primary root, then a plan per root via `apply_device_names(raw, map, fmt, root)`
+  (no second walk); the run threads `targets: list[(ScanResult, Path)]` through
+  `_begin_resolution` → `_resolve_conflicts` → `_after_conflicts` → `_do_copy`.
 
 ## Textual 8.x gotchas (cost real debugging time — do not "simplify" these away)
 
@@ -68,6 +73,14 @@ the destination root.
 ## Invariants (enforced in `PhotoArchApp._run` + `archiver`)
 
 - Destination must not equal or be inside the source (validated before any work).
+- Cold storage (optional): validated BEFORE `mkdir` (a rejected path never
+  touches the source tree) — not inside source, not equal to the primary dest,
+  not nested either way with it. Same restrictions/conflict rules/format/names
+  as primary; one combined conflict dialog, the chosen action applies
+  independently per destination (a file can conflict in one root only).
+  Settings: `cold_dest`, cleared via the sidebar's Clear button (persisted as
+  `""` on the next run start). Stats: existing rows = primary, plus
+  `cold_copies`/`cold_bytes`; `errors` = both roots combined.
 - Conflict handling: in-batch duplicate names and existing destination files both
   produce `Conflict`s; default action is auto-rename (`stem_1.ext`, checked against
   disk AND the in-batch set).

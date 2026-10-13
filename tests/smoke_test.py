@@ -247,6 +247,7 @@ def test_settings_json() -> None:
             {
                 "source": "/src",
                 "dest": "/dst",
+                "cold_dest": "/cold",
                 "format": "device_year_month",
                 "conflict": "skip",
             },
@@ -255,6 +256,7 @@ def test_settings_json() -> None:
         assert settings.load(p) == {
             "source": "/src",
             "dest": "/dst",
+            "cold_dest": "/cold",
             "format": "device_year_month",
             "conflict": "skip",
         }
@@ -266,6 +268,7 @@ def test_settings_json() -> None:
         assert settings.load(p) == {
             "source": "/s",
             "dest": "/d",
+            "cold_dest": "",
             "format": "year_month",
             "conflict": "ask",
         }
@@ -487,7 +490,7 @@ async def test_settings_restore() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        src, dst = root / "src", root / "dst"
+        src, dst, cold = root / "src", root / "dst", root / "cold"
         src.mkdir()
         dst.mkdir()
         cfg = root / "settings.json"
@@ -496,6 +499,7 @@ async def test_settings_restore() -> None:
                 {
                     "source": str(src),
                     "dest": str(dst),
+                    "cold_dest": str(cold),
                     "format": "year_month_day",
                     "conflict": "overwrite",
                 }
@@ -507,11 +511,18 @@ async def test_settings_restore() -> None:
         app.settings_path = cfg  # never touch the real ~/.config file
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause()
-            # all four values are prefilled from the file
+            # all values are prefilled from the file
             assert app._source == src, app._source
             assert app._dest == dst, app._dest
+            assert app._cold == cold, app._cold
+            assert str(cold) in str(app.query_one("#pick-cold").label)
             assert str(app.query_one("#fmt-select", Select).value) == "year_month_day"
             assert app.query_one("#cf-overwrite", RadioButton).value is True
+
+            # clear-cold drops it (persisted on next run start)
+            await pilot.click("#clear-cold")
+            await pilot.pause(0.25)
+            assert app._cold is None
 
             # changing widgets does NOT save yet (save happens on run start)
             app.query_one("#fmt-select", Select).value = "device_year_month"
@@ -527,6 +538,7 @@ async def test_settings_restore() -> None:
             assert saved == {
                 "source": str(src),
                 "dest": str(dst),
+                "cold_dest": "",
                 "format": "device_year_month",
                 "conflict": "skip",
             }, saved
