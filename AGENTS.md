@@ -33,6 +33,9 @@ the destination root.
 - `photoarch/devices.py` — device → friendly-name JSON mapping
   (`~/.config/photoarch/devices.json`, exact-match keys). Tolerant loader
   (missing/corrupt file → `{}`); `save()` returns False on I/O failure.
+- `photoarch/settings.py` — last-used run settings JSON
+  (`~/.config/photoarch/settings.json`: source, dest, format, conflict policy).
+  Same tolerant load/save pattern; invalid values fall back to defaults.
 - `photoarch/app.py` — the TUI: `DirectoryScreen` (folder picker modal),
   `ConflictScreen` (returns "rename"/"overwrite"/"skip"/"cancel"),
   `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
@@ -73,6 +76,10 @@ the destination root.
   the archiver never reads the file itself. "Unknown device" and "Videos" are
   never prompted or stored; naming is mandatory for every other new device
   (empty input = raw name, still stored).
+- Last-used settings (`settings.py`, same `~/.config/photoarch/` rule): loaded
+  in `on_mount` (tests override `app.settings_path` **before** `run_test`),
+  saved only when a run starts, after path validation. The archiver never
+  reads this file either.
 - Media metadata is parsed with **pure stdlib** (struct) — never add
   ffmpeg/ffprobe or any media library; that applies to video device AND video
   date (mtime) parsing.

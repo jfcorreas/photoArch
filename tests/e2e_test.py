@@ -13,7 +13,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from photoarch.app import DeviceNamingScreen, PhotoArchApp
-from textual.widgets import DataTable, Input, Select, TabbedContent
+from textual.widgets import DataTable, Input, RadioButton, Select, TabbedContent
 
 
 def make_photo(path: Path, date: str | None = None, model: str | None = None) -> None:
@@ -70,9 +70,11 @@ async def main() -> None:
             '{"TestMake iPhone 13": "Test Phone", "GoPro HERO11": "My GoPro"}',
             encoding="utf-8",
         )
+        settings_file = root / "settings.json"
 
         app = PhotoArchApp()
         app.devices_path = devices_file  # never touch the real ~/.config file
+        app.settings_path = settings_file
         async with app.run_test(size=(140, 45)) as pilot:
             # simulate folder selection directly (modal browsing is covered by unit smoke)
             app._source = src
@@ -230,6 +232,31 @@ async def main() -> None:
             ).exists(), list(dst.rglob("*"))
             assert app._stat_values.get("copied") == "1", app._stat_values
             print("✅ e2e devices panel OK (rename picked up by next run)")
+
+        # --- settings: saved on run start, restored by the next app instance ---
+        import json
+
+        saved = json.loads(settings_file.read_text(encoding="utf-8"))
+        assert saved == {
+            "source": str(src),
+            "dest": str(dst),
+            "format": "device_year_month",
+            "conflict": "ask",
+        }, saved
+
+        app2 = PhotoArchApp()
+        app2.devices_path = devices_file
+        app2.settings_path = settings_file
+        async with app2.run_test(size=(140, 45)) as pilot2:
+            await pilot2.pause()
+            assert app2._source == src, app2._source
+            assert app2._dest == dst, app2._dest
+            assert str(app2.query_one("#fmt-select", Select).value) == "device_year_month"
+            assert app2.query_one("#cf-ask", RadioButton).value is True
+            # folder buttons show the restored paths
+            assert str(src) in str(app2.query_one("#pick-source").label)
+            assert str(dst) in str(app2.query_one("#pick-dest").label)
+        print("✅ e2e settings OK (saved on run start, restored on next launch)")
 
     print("\n🎉 End-to-end tests passed")
 

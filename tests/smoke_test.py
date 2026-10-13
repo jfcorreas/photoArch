@@ -216,21 +216,72 @@ async def test_directory_navigation() -> None:
 
 
 async def test_tui() -> None:
-    app = PhotoArchApp()
-    async with app.run_test() as pilot:
-        assert app.query_one("#pick-source")
-        assert app.query_one("#pick-dest")
-        assert app.query_one("#btn-dry")
-        assert app.query_one("#btn-archive")
-        # run with nothing selected -> should notify, not crash
-        await pilot.press("d")
-        await pilot.pause()
-        # open & close the source folder dialog
-        await pilot.click("#pick-source")
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
+    with tempfile.TemporaryDirectory() as tmp:
+        app = PhotoArchApp()
+        app.settings_path = Path(tmp) / "settings.json"  # never touch the real ~/.config file
+        async with app.run_test() as pilot:
+            assert app.query_one("#pick-source")
+            assert app.query_one("#pick-dest")
+            assert app.query_one("#btn-dry")
+            assert app.query_one("#btn-archive")
+            # run with nothing selected -> should notify, not crash
+            await pilot.press("d")
+            await pilot.pause()
+            # open & close the source folder dialog
+            await pilot.click("#pick-source")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
     print("✅ TUI smoke OK")
+
+
+def test_settings_json() -> None:
+    from photoarch import settings
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "cfg" / "settings.json"
+        # missing file -> defaults
+        assert settings.load(p) == settings.DEFAULTS, settings.load(p)
+        # round trip
+        assert settings.save(
+            {
+                "source": "/src",
+                "dest": "/dst",
+                "format": "device_year_month",
+                "conflict": "skip",
+            },
+            p,
+        )
+        assert settings.load(p) == {
+            "source": "/src",
+            "dest": "/dst",
+            "format": "device_year_month",
+            "conflict": "skip",
+        }
+        # invalid format/conflict values fall back to defaults, paths kept
+        p.write_text(
+            '{"source": "/s", "dest": "/d", "format": "nope", "conflict": "maybe"}',
+            encoding="utf-8",
+        )
+        assert settings.load(p) == {
+            "source": "/s",
+            "dest": "/d",
+            "format": "year_month",
+            "conflict": "ask",
+        }
+        # empty paths -> defaults (nothing restored)
+        p.write_text('{"source": "", "dest": "", "format": "year_month_day", "conflict": "rename"}', encoding="utf-8")
+        loaded = settings.load(p)
+        assert loaded["source"] == "" and loaded["dest"] == ""
+        # corrupt / non-dict JSON -> defaults
+        p.write_text("{not valid json", encoding="utf-8")
+        assert settings.load(p) == settings.DEFAULTS
+        p.write_text('["a", "list"]', encoding="utf-8")
+        assert settings.load(p) == settings.DEFAULTS
+        # save sanitizes invalid values too
+        assert settings.save({"format": "nope", "conflict": "maybe"}, p)
+        assert settings.load(p) == settings.DEFAULTS
+        print("✅ settings json OK")
 
 
 def test_devices_json() -> None:
@@ -428,16 +479,98 @@ async def test_devices_panel() -> None:
     print("✅ devices panel OK (rename + remove)")
 
 
+async def test_settings_restore() -> None:
+    """Last-used folders/format/conflict are prefilled and saved on run start."""
+    import json
+
+    from textual.widgets import RadioButton, Select
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src, dst = root / "src", root / "dst"
+        src.mkdir()
+        dst.mkdir()
+        cfg = root / "settings.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "source": str(src),
+                    "dest": str(dst),
+                    "format": "year_month_day",
+                    "conflict": "overwrite",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        app = PhotoArchApp()
+        app.settings_path = cfg  # never touch the real ~/.config file
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            # all four values are prefilled from the file
+            assert app._source == src, app._source
+            assert app._dest == dst, app._dest
+            assert str(app.query_one("#fmt-select", Select).value) == "year_month_day"
+            assert app.query_one("#cf-overwrite", RadioButton).value is True
+
+            # changing widgets does NOT save yet (save happens on run start)
+            app.query_one("#fmt-select", Select).value = "device_year_month"
+            app.query_one("#cf-skip", RadioButton).value = True
+            await pilot.pause()
+            assert json.loads(cfg.read_text(encoding="utf-8"))["format"] == "year_month_day"
+
+            # a run start persists the current values
+            await pilot.press("d")
+            await pilot.pause()
+            await asyncio.sleep(1.0)  # let the scan worker finish
+            saved = json.loads(cfg.read_text(encoding="utf-8"))
+            assert saved == {
+                "source": str(src),
+                "dest": str(dst),
+                "format": "device_year_month",
+                "conflict": "skip",
+            }, saved
+    print("✅ settings restore OK (prefill + save on run start)")
+
+
+async def test_settings_missing_folder() -> None:
+    """A saved folder that no longer exists is restored as-is; the run errors out."""
+    import json
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / "settings.json"
+        gone = Path(tmp) / "vanished"
+        cfg.write_text(
+            json.dumps(
+                {"source": str(gone), "dest": str(gone / "out"), "format": "year_month", "conflict": "ask"}
+            ),
+            encoding="utf-8",
+        )
+        app = PhotoArchApp()
+        app.settings_path = cfg
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause()
+            assert app._source == gone, app._source  # restored even though missing
+            await pilot.press("d")
+            await pilot.pause()
+            # validation fails before the save: file untouched
+            assert json.loads(cfg.read_text(encoding="utf-8"))["source"] == str(gone)
+    print("✅ settings missing folder OK (restored, run validates)")
+
+
 def main() -> None:
     test_organizer()
     test_scan_and_copy()
     test_dry_run()
     test_devices_json()
+    test_settings_json()
     test_device_mapping()
     test_video_device()
     asyncio.run(test_directory_navigation())
     asyncio.run(test_tui())
     asyncio.run(test_devices_panel())
+    asyncio.run(test_settings_restore())
+    asyncio.run(test_settings_missing_folder())
     print("\n🎉 All tests passed")
 
 

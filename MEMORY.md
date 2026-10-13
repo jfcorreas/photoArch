@@ -1,11 +1,11 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.3: TUI archives photos/videos by EXIF date+device. New devices are named by the
-  user (mandatory) and the friendly name is reused in folder names on later runs.
-  Devices tab lists known devices: rename (empty = raw name) or remove.
-  Videos get their device from a pure ISO-BMFF parser; stats panel shows
-  images/videos counts with their formats listed under each (count desc).
+- v0.1.4: TUI archives photos/videos by EXIF date+device; new devices get a user-chosen
+  friendly name reused on later runs; Devices tab renames/removes known devices.
+  Videos get their device from a pure ISO-BMFF parser; stats show images/videos
+  counts with their formats. Last-used source/dest/format/conflict policy are
+  persisted in ~/.config/photoarch/settings.json and restored on launch.
 ## Decisions (and why)
 - Easy to run. Exec only with run.sh.
 - Conflict granularity — the dialog resolves all conflicts with one action ("Apply to all"); per-file decisions are not offered (kept it simple).
@@ -27,9 +27,12 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   table reloads on tab activation and after the naming modal saves). Remove →
   device re-prompted on next run; rename never moves folders of earlier runs
   (hint in tab). Mapping is read at run start → mid-run edits apply next run.
-- Stats — images/videos rows in STAT_ROWS + dynamic per-extension rows from
-  ScanResult.by_ext, grouped under their kind row (IMAGE_EXTS / VIDEO_EXTS,
-  count desc). Tests override `app.devices_path` (temp JSON).
+- Stats — images/videos rows + dynamic per-extension rows from ScanResult.by_ext,
+  grouped under their kind row (count desc). Tests override `app.devices_path`.
+- Settings — settings.json in ~/.config/photoarch (same tolerant pattern as
+  devices.json); restored in on_mount (even a vanished folder, validated at
+  run), saved ONLY when a run starts AND after path validation (user choice).
+  Tests override `app.settings_path` BEFORE run_test (restore is in on_mount).
 - Installed copy at ~/.local/share/photoArch (photoarch/*.py + requirements.txt
   + run.sh only; venv built on first run). Re-copy those files after updates.
 ## Lessons Learned and Mistakes to Avoid
@@ -45,5 +48,6 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   ContentSwitcher / TabPane all default height:auto — fr/% inside a pane only resolve
   after explicit heights on #tabs + its ContentSwitcher; #content width:100% laid the
   content out wider than the screen (buttons unclickable) → changed to 1fr.
+- Any test creating PhotoArchApp must override settings_path (before run_test).
 ## Next Steps
 - (blank for now)

@@ -26,7 +26,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import archiver, devices
+from . import archiver, devices, settings
 from .organizer import FORMATS, IMAGE_EXTS, VIDEO_EXTS
 
 
@@ -336,6 +336,8 @@ class PhotoArchApp(App):
         self._ext_counts: dict[str, int] = {}
         # Where the device->friendly-name JSON is stored (tests override this)
         self.devices_path: Path = devices.DEVICES_FILE
+        # Where last-used run settings are stored (tests override this)
+        self.settings_path: Path = settings.SETTINGS_FILE
         # Last mapping shown in the Devices tab (raw device -> friendly name)
         self._devices_map: dict[str, str] = {}
 
@@ -397,8 +399,51 @@ class PhotoArchApp(App):
             )
         )
         self._reset_stats()
+        self._restore_settings()
         self._update_summary()
         self._refresh_devices_table()
+
+    # ---- persisted settings ---------------------------------------------
+
+    def _restore_settings(self) -> None:
+        """Prefill folders/format/conflict from the last run (tolerant load).
+
+        A saved folder that no longer exists is restored as-is; it is
+        validated when a run starts (and the picker falls back to $HOME).
+        """
+        cfg = settings.load(self.settings_path)
+        if cfg["source"]:
+            self._source = Path(cfg["source"])
+            self.query_one("#pick-source", Button).label = f"📁  {self._source}"
+        if cfg["dest"]:
+            self._dest = Path(cfg["dest"])
+            self.query_one("#pick-dest", Button).label = f"📁  {self._dest}"
+        self.query_one("#fmt-select", Select).value = cfg["format"]
+        radio_id = {
+            "ask": "cf-ask",
+            "rename": "cf-rename",
+            "overwrite": "cf-overwrite",
+            "skip": "cf-skip",
+        }[cfg["conflict"]]
+        self.query_one(f"#{radio_id}", RadioButton).value = True
+
+    def _save_settings(self) -> None:
+        """Persist the current folders/format/conflict (called on run start)."""
+        policy = self.query_one("#conflict-policy", RadioSet).pressed_button
+        policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
+        data = {
+            "source": str(self._source) if self._source else "",
+            "dest": str(self._dest) if self._dest else "",
+            "format": str(self.query_one("#fmt-select", Select).value),
+            "conflict": {
+                "cf-ask": "ask",
+                "cf-rename": "rename",
+                "cf-overwrite": "overwrite",
+                "cf-skip": "skip",
+            }.get(policy_id, "ask"),
+        }
+        if not settings.save(data, self.settings_path):
+            self.notify(f"⚠️ Could not save {self.settings_path}.", severity="warning")
 
     # ---- stats helpers ---------------------------------------------------
 
@@ -577,6 +622,8 @@ class PhotoArchApp(App):
         if src_r == dst_r or src_r in dst_r.parents:
             self.notify("⚠️ Destination must not be inside the source folder.", severity="error")
             return
+
+        self._save_settings()  # run started -> remember for the next launch
 
         fmt = str(self.query_one("#fmt-select", Select).value)
         device_map = devices.load(self.devices_path)
