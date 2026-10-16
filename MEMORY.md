@@ -1,10 +1,11 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.6: TUI archives photos/videos by EXIF date+device with friendly device
-  names (Devices tab renames/removes); WhatsApp-named files skip metadata;
-  video device via pure ISO-BMFF parser; last-used settings incl. optional
-  cold storage (2nd destination) in ~/.config/photoarch/settings.json.
+- v0.1.7: Statistics + Results fused into ONE "📊 Results" tab (stats table +
+  live activity log, capped at 2000 lines). TUI archives photos/videos by EXIF
+  date+device with friendly device names (Devices tab renames/removes);
+  WhatsApp-named files skip metadata; video device via pure ISO-BMFF parser;
+  last-used settings incl. optional cold storage (2nd destination).
 ## Decisions (and why)
 - Easy to run. Exec only with run.sh.
 - Conflict granularity — one action for all conflicts ("Apply to all"); no per-file decisions (kept it simple).
@@ -22,6 +23,9 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   empty input = raw name). Editing JSON later does not migrate folders. Panel:
   save/remove rewrite the file; remove → re-prompted next run; mapping read at run start.
 - Stats — images/videos rows + per-extension rows from ScanResult.by_ext (count desc).
+  Fused with the per-file activity log in ONE "📊 Results" tab (Results was
+  write-only before); widget ids #stats-table/#results-log kept so _log and the
+  tests didn't churn; log capped at 2000 lines (memory bound on huge archives).
   Tests override `app.devices_path`. Settings — restored in on_mount (vanished folder
   kept as-is, validated at run), saved ONLY on run start after path validation;
   tests override `app.settings_path` BEFORE run_test.
@@ -37,6 +41,11 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
 - Installed copy at ~/.local/share/photoArch (photoarch/*.py + requirements.txt +
   run.sh). Re-copy after updates.
 ## Lessons Learned and Mistakes to Avoid
+- TabPane defaults to `height: auto`: a pane with a `height: 100%` child
+  collapses to 0 → fused Results tab looked "empty" (log defers writes until
+  size known; table renders nothing). Fix: `#tab-results { height: 100%; }`,
+  table `max-height: 60%`, log `min-height: 6`. ALWAYS assert layout sizes in
+  tests — data-only assertions pass on a collapsed panel.
 - Changing item.dest_dir after scan invalidates the conflict list — rebuild via
   archiver.apply_device_names() (shares _plan_dests with scan()).
 - `fr` units inside an auto-height modal stretch it to full screen and

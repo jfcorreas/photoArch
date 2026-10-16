@@ -110,6 +110,13 @@ async def main() -> None:
             await pilot.pause()
             log = app.query_one("#results-log")
             assert log.lines, "no results logged"
+            # fused panel: stats table and activity log share #stats-panel,
+            # and both must get real height (a collapsed pane broke the log
+            # silently — writes are deferred and rows invisible)
+            panel = app.query_one("#stats-panel")
+            assert app.query_one("#stats-table").parent == panel
+            assert log.parent == panel
+            assert panel.size.height > 0 and log.size.height > 1, (panel.size, log.size)
             print("✅ e2e dry run OK (no files written)")
 
             # --- real archive ---

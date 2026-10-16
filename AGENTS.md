@@ -45,7 +45,10 @@ the destination root.
   "rename"/"overwrite"/"skip"/"cancel"),
   `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
   Devices tab (rename/remove known devices; writes only `devices.json`),
-  `PhotoArchApp`. Cold storage = optional 2nd destination: ONE scan against the
+  `PhotoArchApp`. Statistics + Results are ONE fused "📊 Results" tab
+  (`#stats-panel`: auto-height stats table `#stats-table` on top, live
+  per-file activity log `#results-log` capped at 2000 lines below); Errors
+  and Devices stay separate tabs. Cold storage = optional 2nd destination: ONE scan against the
   primary root, then a plan per root via `apply_device_names(raw, map, fmt, root)`
   (no second walk); the run threads `targets: list[(ScanResult, Path)]` through
   `_begin_resolution` → `_resolve_conflicts` → `_after_conflicts` → `_do_copy`.
@@ -57,9 +60,20 @@ the destination root.
   `on_mount`. Passing `TabPane`s to the constructor raises AttributeError, and
   `add_pane` is async — querying pane children immediately after without `await`
   gives NoMatches.
+- `TabPane` defaults to `height: auto` — a pane holding a `height: 100%`
+  container silently collapses to 0 rows (the fused Results panel went
+  "empty": RichLog defers writes until its size is known, DataTable renders
+  nothing). Always set `height: 100%` on such a TabPane (see `#tab-results`).
+- Inside `#tab-results`, `#stats-table` is capped at `max-height: 60%` and the
+  log has `min-height: 6`: the ~23-row stats table would otherwise starve the
+  activity log on 32-row terminals. Tests must assert layout sizes
+  (`widget.size.height`), not just row data — data assertions pass on a
+  collapsed panel.
 - `RichLog.write` **defers all renders while the widget is hidden** (inactive tab,
   size unknown): `log.lines` stays empty until the tab is shown. In tests, switch
-  `tabs.active = "tab-results"` before asserting on `log.lines`.
+  `tabs.active = "tab-results"` before asserting on `log.lines` — `#results-log`
+  lives inside the fused "Results" tab (`#stats-panel`, the default tab). Its
+  `max_lines=2000` is a memory bound only; tests never hit it.
 - `OptionList`: `str(option)` is the repr (`"Option('x/')"`), never the label.
   Use `event.option_index` and keep your own index→value map (`DirectoryScreen._entries`).
 - Simulate list selection in tests with `listing.highlighted = idx` + `listing.action_select()`;

@@ -288,9 +288,12 @@ class PhotoArchApp(App):
     #tabs { height: 1fr; }
     #tabs ContentSwitcher { height: 1fr; }
     #tab-devices { height: 100%; }
+    #tab-results { height: 100%; }
     #stats-panel { height: 100%; }
-    #stats-table { height: auto; }
-    #results-log, #errors-log { height: 100%; }
+    /* table scrolls internally beyond 60% so the activity log always shows */
+    #stats-table { height: auto; max-height: 60%; }
+    #stats-panel RichLog { height: 1fr; min-height: 6; }
+    #errors-log { height: 100%; }
 
     #dir-dialog {
         width: 80%;
@@ -394,8 +397,19 @@ class PhotoArchApp(App):
 
     async def on_mount(self) -> None:
         tabs = self.query_one("#tabs", TabbedContent)
-        await tabs.add_pane(TabPane("📊 Statistics", DataTable(id="stats-table"), id="tab-stats"))
-        await tabs.add_pane(TabPane("📋 Results", RichLog(id="results-log", wrap=True), id="tab-results"))
+        # Statistics + Results fused into ONE tab: aggregate stats table on
+        # top, live per-file activity log below (log capped to bound memory).
+        await tabs.add_pane(
+            TabPane(
+                "📊 Results",
+                Vertical(
+                    DataTable(id="stats-table"),
+                    RichLog(id="results-log", wrap=True, max_lines=2000),
+                    id="stats-panel",
+                ),
+                id="tab-results",
+            )
+        )
         await tabs.add_pane(TabPane("❌ Errors", RichLog(id="errors-log", wrap=True), id="tab-errors"))
         await tabs.add_pane(
             TabPane(
