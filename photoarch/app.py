@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
+
 from pathlib import Path
 from typing import Optional
 
@@ -65,6 +67,24 @@ def human_size(n: int) -> str:
         size /= 1024
     return f"{n} B"
 
+# --------------------------------------------------------------------------
+# One run's settings, threaded through the pipeline as a single object
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RunRequest:
+    """Everything a pipeline step needs about the current run.
+
+    frozen=True: never mutated — after the naming modal we build a NEW
+    request with dataclasses.replace() instead of changing this one.
+    """
+
+    src: Path
+    dst: Path
+    cold: Optional[Path]  # optional 2nd destination (None = no cold storage)
+    fmt: str
+    dry_run: bool
+    device_map: dict[str, str]  # raw device -> friendly name
 
 # --------------------------------------------------------------------------
 # Main application
@@ -525,31 +545,15 @@ class PhotoArchApp(App):
         self._set_stat("dest", str(dst_r))
         self._set_stat("format", FORMATS.get(fmt, next(iter(FORMATS.values())))[0])
         self.notify("🔎 Scanning source folder…")
-        self._scan_and_plan(src_r, dst_r, cold_r, fmt, dry_run, device_map)
+        self._scan_and_plan(RunRequest(src_r, dst_r, cold_r, fmt, dry_run, device_map))
 
     @work(thread=True, exclusive=True, group="archive")
-    def _scan_and_plan(
-        self,
-        src: Path,
-        dst: Path,
-        cold: Optional[Path],
-        fmt: str,
-        dry_run: bool,
-        device_map: dict[str, str],
-    ) -> None:
+    def _scan_and_plan(self, req: RunRequest) -> None:
         # Scan once against the primary destination (cold reuses these items)
-        plan = archiver.scan(src, dst, fmt, device_map)
-        self.app.call_from_thread(self._after_scan, plan, dst, cold, fmt, dry_run, device_map)
+        plan = archiver.scan(req.src, req.dst, req.fmt, req.device_map)
+        self.app.call_from_thread(self._after_scan, req, plan)
 
-    def _after_scan(
-        self,
-        plan: archiver.ScanResult,
-        dst: Path,
-        cold: Optional[Path],
-        fmt: str,
-        dry_run: bool,
-        device_map: dict[str, str],
-    ) -> None:
+    def _after_scan(self, req: RunRequest, plan: archiver.ScanResult) -> None:
         for err in plan.errors:
             self._log_error(err)
         self._set_stat("scanned", str(len(plan.items) + plan.skipped))
@@ -568,20 +572,16 @@ class PhotoArchApp(App):
 
         if plan.unknown_devices:
             def got(mapping: Optional[dict[str, str]]) -> None:
-                self._after_device_names(plan, dst, cold, fmt, dry_run, device_map, mapping)
+                self._after_device_names(req, plan, mapping)
             self.push_screen(DeviceNamingScreen(plan.unknown_devices), got)
             return
 
-        self._begin_resolution(plan, device_map, fmt, dst, cold, dry_run)
+        self._begin_resolution(req, plan)
 
     def _after_device_names(
         self,
+        req: RunRequest,
         plan: archiver.ScanResult,
-        dst: Path,
-        cold: Optional[Path],
-        fmt: str,
-        dry_run: bool,
-        device_map: dict[str, str],
         mapping: Optional[dict[str, str]],
     ) -> None:
         if mapping is None:
@@ -595,36 +595,28 @@ class PhotoArchApp(App):
             )
         self._refresh_devices_table()  # Devices tab may be open behind the modal
         # dest_dir changes -> rebuild both destinations with friendly names
-        self._begin_resolution(plan, merged, fmt, dst, cold, dry_run)
+        self._begin_resolution(replace(req, device_map=merged), plan)
 
-    def _begin_resolution(
-        self,
-        raw_plan: archiver.ScanResult,
-        device_map: dict[str, str],
-        fmt: str,
-        dst: Path,
-        cold: Optional[Path],
-        dry_run: bool,
-    ) -> None:
+    def _begin_resolution(self, req: RunRequest, raw_plan: archiver.ScanResult) -> None:
         """Build one plan per destination (reusing the scanned items) and resolve.
 
         apply_device_names recomputes dest_dir from the friendly names AND
         rebuilds the conflict list against the given root — so each destination
         gets its own conflicts without re-walking the source.
         """
-        roots = [dst] + ([cold] if cold is not None else [])
+        roots = [req.dst] + ([req.cold] if req.cold is not None else [])
         targets = [
-            (archiver.apply_device_names(raw_plan, device_map, fmt, root), root)
+            (archiver.apply_device_names(raw_plan, req.device_map, req.fmt, root), root)
             for root in roots
         ]
         self._set_stat("folders", str(targets[0][0].folders_to_create))  # primary
         self._set_stat(
             "conflicts", str(sum(len(plan.conflicts) for plan, _root in targets))
         )
-        self._resolve_conflicts(targets, dry_run)
+        self._resolve_conflicts(req, targets)
 
     def _resolve_conflicts(
-        self, targets: list[tuple[archiver.ScanResult, Path]], dry_run: bool
+        self, req: RunRequest, targets: list[tuple[archiver.ScanResult, Path]]
     ) -> None:
         groups = [(root, plan.conflicts) for plan, root in targets if plan.conflicts]
         if groups:
@@ -632,16 +624,19 @@ class PhotoArchApp(App):
             policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
             if policy_id == "cf-ask":
                 def got(action: str) -> None:
-                    self._after_conflicts(targets, dry_run, action)
+                    self._after_conflicts(req, targets, action)
                 self.push_screen(ConflictScreen(groups), got)
                 return
             action = {"cf-rename": "rename", "cf-overwrite": "overwrite", "cf-skip": "skip"}[policy_id]
         else:
             action = "rename"  # no conflicts; action is irrelevant
-        self._after_conflicts(targets, dry_run, action)
+        self._after_conflicts(req, targets, action)
 
     def _after_conflicts(
-        self, targets: list[tuple[archiver.ScanResult, Path]], dry_run: bool, action: str
+        self,
+        req: RunRequest,
+        targets: list[tuple[archiver.ScanResult, Path]],
+        action: str,
     ) -> None:
         if action == "cancel":
             self.notify("🚫 Operation cancelled by user.")
@@ -660,30 +655,30 @@ class PhotoArchApp(App):
                 "conflicts_skipped",
                 str(sum(len(plan.conflicts) for plan, _root in targets)),
             )
-        self._do_copy(resolved, dry_run)
+        self._do_copy(req, resolved)
 
     @work(thread=True, exclusive=True, group="archive")
     def _do_copy(
         self,
+        req: RunRequest,
         resolved: list[tuple[archiver.ScanResult, Path]],
-        dry_run: bool,
     ) -> None:
         reports = [
-            archiver.execute(plan, root, dry_run, on_progress=self._progress_from_thread)
+            archiver.execute(plan, root, req.dry_run, on_progress=self._progress_from_thread)
             for plan, root in resolved
         ]
         primary = reports[0]
         cold_report = reports[1] if len(reports) > 1 else None
-        self.app.call_from_thread(self._after_copy, primary, cold_report, dry_run)
+        self.app.call_from_thread(self._after_copy, req, primary, cold_report)
 
     def _progress_from_thread(self, message: str, kind: str) -> None:
         self.app.call_from_thread(self._log, message, kind)
 
     def _after_copy(
         self,
+        req: RunRequest,
         report: archiver.CopyReport,
         cold_report: Optional[archiver.CopyReport],
-        dry_run: bool,
     ) -> None:
         for r in (report, cold_report):
             if r is None:
@@ -699,9 +694,9 @@ class PhotoArchApp(App):
         if cold_report is not None:
             self._set_stat("cold_copies", str(cold_report.copied))
             self._set_stat("cold_bytes", human_size(cold_report.bytes_copied))
-        verb = "would be copied" if dry_run else "copied"
-        icon = "🧪" if dry_run else "📦"
-        msg = f"{icon} {'Dry run complete' if dry_run else 'Archive complete'} — {report.copied} files {verb}"
+        verb = "would be copied" if req.dry_run else "copied"
+        icon = "🧪" if req.dry_run else "📦"
+        msg = f"{icon} {'Dry run complete' if req.dry_run else 'Archive complete'} — {report.copied} files {verb}"
         if cold_report is not None:
             msg += f" (+{cold_report.copied} to cold storage)"
         self.notify(msg + ".")
