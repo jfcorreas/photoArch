@@ -445,30 +445,33 @@ class PhotoArchApp(App):
 
     # ---- folder picking --------------------------------------------------
 
+    # which attribute each folder picker writes to: kind -> (attr, icon, refresh_clear)
+    _PICKERS = {
+        "source": ("_source", "📁  ", False),
+        "dest": ("_dest", "📁  ", False),
+        "cold": ("_cold", "🗄️  ", True),  # cold also toggles the Clear button
+    }
+
+    def _pick_folder(self, kind: str) -> None:
+        """Open the folder modal for 'source'/'dest'/'cold' and store the result."""
+        attr, icon, refresh_clear = self._PICKERS[kind]
+
+        def got(path: Optional[Path]) -> None:
+            if path is None:
+                return  # cancelled
+            setattr(self, attr, path)
+            event_button = self.query_one(f"#pick-{kind}", Button)
+            event_button.label = f"{icon}{path}"
+            if refresh_clear:
+                self._update_clear_cold()
+            self._update_summary()
+
+        self.push_screen(DirectoryScreen(getattr(self, attr)), got)
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
-        if bid == "pick-source":
-            def got_source(path: Optional[Path]) -> None:
-                if path is not None:
-                    self._source = path
-                    event.button.label = f"📁  {path}"
-                    self._update_summary()
-            self.push_screen(DirectoryScreen(self._source), got_source)
-        elif bid == "pick-dest":
-            def got_dest(path: Optional[Path]) -> None:
-                if path is not None:
-                    self._dest = path
-                    event.button.label = f"📁  {path}"
-                    self._update_summary()
-            self.push_screen(DirectoryScreen(self._dest), got_dest)
-        elif bid == "pick-cold":
-            def got_cold(path: Optional[Path]) -> None:
-                if path is not None:
-                    self._cold = path
-                    event.button.label = f"🗄️  {path}"
-                    self._update_clear_cold()
-                    self._update_summary()
-            self.push_screen(DirectoryScreen(self._cold), got_cold)
+        if bid in ("pick-source", "pick-dest", "pick-cold"):
+            self._pick_folder(bid.removeprefix("pick-"))
         elif bid == "clear-cold":
             self._cold = None
             self.query_one("#pick-cold", Button).label = "🗄️  Select cold storage folder…"

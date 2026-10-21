@@ -1,11 +1,10 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.7: Statistics + Results fused into ONE "📊 Results" tab (stats table +
-  live activity log, capped at 2000 lines). TUI archives photos/videos by EXIF
-  date+device with friendly device names (Devices tab renames/removes);
-  WhatsApp-named files skip metadata; video device via pure ISO-BMFF parser;
-  last-used settings incl. optional cold storage (2nd destination).
+- v0.1.8: app.py refactor (structure only): modals live in screens.py
+  (re-exported by app.py so tests unchanged); pipeline threads a frozen
+  RunRequest dataclass; _run split into _validate_run + _run; folder picker
+  deduped (_pick_folder).
 ## Decisions (and why)
 - Easy to run. Exec only with run.sh.
 - Conflict granularity — one action for all conflicts ("Apply to all"); no per-file decisions (kept it simple).
@@ -40,6 +39,10 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   reintroduce 3-row bordered buttons).
 - Installed copy at ~/.local/share/photoArch (photoarch/*.py + requirements.txt +
   run.sh). Re-copy after updates.
+- Refactor v0.1.8 — behavior frozen on purpose: widget ids, CSS, notification
+  texts and pipeline ORDER untouched, zero test changes (re-exports keep
+  `from photoarch.app import ConflictScreen, ...` working). RunRequest is
+  frozen dataclass + replace(), never mutated.
 ## Lessons Learned and Mistakes to Avoid
 - TabPane defaults to `height: auto`: a pane with a `height: 100%` child
   collapses to 0 → fused Results tab looked "empty" (log defers writes until

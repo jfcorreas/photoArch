@@ -40,18 +40,24 @@ the destination root.
   (`~/.config/photoarch/settings.json`: source, dest, cold_dest, format, conflict
   policy; `cold_dest:""` = no cold storage). Same tolerant load/save pattern;
   invalid values fall back to defaults.
-- `photoarch/app.py` — the TUI: `DirectoryScreen` (folder picker modal),
-  `ConflictScreen` (takes `groups: list[(dest_root, conflicts)]`, returns
-  "rename"/"overwrite"/"skip"/"cancel"),
-  `DeviceNamingScreen` (returns {raw_device: friendly_name} or None),
-  Devices tab (rename/remove known devices; writes only `devices.json`),
-  `PhotoArchApp`. Statistics + Results are ONE fused "📊 Results" tab
-  (`#stats-panel`: auto-height stats table `#stats-table` on top, live
-  per-file activity log `#results-log` capped at 2000 lines below); Errors
-  and Devices stay separate tabs. Cold storage = optional 2nd destination: ONE scan against the
-  primary root, then a plan per root via `apply_device_names(raw, map, fmt, root)`
-  (no second walk); the run threads `targets: list[(ScanResult, Path)]` through
-  `_begin_resolution` → `_resolve_conflicts` → `_after_conflicts` → `_do_copy`.
+- `photoarch/screens.py` — the three modal dialogs: `DirectoryScreen` (folder
+  picker), `ConflictScreen` (takes `groups: list[(dest_root, conflicts)]`,
+  returns "rename"/"overwrite"/"skip"/"cancel"), `DeviceNamingScreen`
+  (returns {raw_device: friendly_name} or None). Self-contained — they never
+  import the app; `app.py` re-imports all three so tests keep working with
+  `from photoarch.app import ...` (re-export).
+- `photoarch/app.py` — the TUI: sidebar, tabs, Devices tab (rename/remove
+  known devices; writes only `devices.json`), `PhotoArchApp`. Statistics +
+  Results are ONE fused "📊 Results" tab (`#stats-panel`: auto-height stats
+  table `#stats-table` on top, live per-file activity log `#results-log`
+  capped at 2000 lines below); Errors and Devices stay separate tabs. The run
+  pipeline threads one frozen `RunRequest(src, dst, cold, fmt, dry_run,
+  device_map)` dataclass (`_validate_run` → `_scan_and_plan` →
+  `_begin_resolution` → `_resolve_conflicts` → `_after_conflicts` →
+  `_do_copy`); after the naming modal the request is SWAPPED via
+  `dataclasses.replace(req, device_map=merged)` — never mutated. Cold storage
+  = optional 2nd destination: ONE scan against the primary root, then a plan
+  per root via `apply_device_names(raw, map, fmt, root)` (no second walk).
 
 ## Textual 8.x gotchas (cost real debugging time — do not "simplify" these away)
 
