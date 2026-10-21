@@ -485,31 +485,53 @@ class PhotoArchApp(App):
 
     # ---- run logic -------------------------------------------------------
 
-    def action_dry_run(self) -> None:
+    def action_dry_run(self) -> None:          # unchanged
         self._run(dry_run=True)
 
-    def action_archive(self) -> None:
+    def action_archive(self) -> None:          # unchanged
         self._run(dry_run=False)
 
     def _run(self, dry_run: bool) -> None:
+        req = self._validate_run(dry_run)
+        if req is None:
+            return  # validation already showed the error notification
+        self._save_settings()  # run started -> remember for the next launch
+
+        self._reset_stats()
+        self.query_one("#results-log", RichLog).clear()
+        self.query_one("#errors-log", RichLog).clear()
+        self._set_stat("mode", "🧪 dry run" if dry_run else "📦 real archive")
+        self._set_stat("source", str(req.src))
+        self._set_stat("dest", str(req.dst))
+        self._set_stat("format", FORMATS.get(req.fmt, next(iter(FORMATS.values())))[0])
+        self.notify("🔎 Scanning source folder…")
+        self._scan_and_plan(req)
+
+    def _validate_run(self, dry_run: bool) -> Optional[RunRequest]:
+        """Check folders and return the run's request, or None (error shown).
+
+        Order matters and is tested: destination folders are created only
+        after every check passed, and settings are saved after this returns
+        a request (never on a rejected run).
+        """
         if self._source is None or self._dest is None:
             self.notify("⚠️ Select both source and destination folders first.", severity="error")
-            return
+            return None
         src = self._source.expanduser()
         dst = self._dest.expanduser()
         if not src.is_dir():
             self.notify(f"⚠️ Source folder does not exist: {src}", severity="error")
-            return
+            return None
         try:
             dst.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             self.notify(f"⚠️ Cannot create destination: {exc}", severity="error")
-            return
+            return None
 
         src_r, dst_r = src.resolve(), dst.resolve()
         if src_r == dst_r or src_r in dst_r.parents:
             self.notify("⚠️ Destination must not be inside the source folder.", severity="error")
-            return
+            return None
 
         # optional cold storage: same restrictions as the primary destination
         cold_r: Optional[Path] = None
@@ -519,33 +541,22 @@ class PhotoArchApp(App):
             # validate BEFORE mkdir so a rejected path never touches the source tree
             if cold_r == src_r or src_r in cold_r.parents:
                 self.notify("⚠️ Cold storage must not be inside the source folder.", severity="error")
-                return
+                return None
             if cold_r == dst_r or dst_r in cold_r.parents or cold_r in dst_r.parents:
                 self.notify(
                     "⚠️ Cold storage must differ from the destination and not contain it (or be inside it).",
                     severity="error",
                 )
-                return
+                return None
             try:
                 cold.mkdir(parents=True, exist_ok=True)  # mirror primary (also on dry run)
             except OSError as exc:
                 self.notify(f"⚠️ Cannot create cold storage: {exc}", severity="error")
-                return
-
-        self._save_settings()  # run started -> remember for the next launch
+                return None
 
         fmt = str(self.query_one("#fmt-select", Select).value)
         device_map = devices.load(self.devices_path)
-
-        self._reset_stats()
-        self.query_one("#results-log", RichLog).clear()
-        self.query_one("#errors-log", RichLog).clear()
-        self._set_stat("mode", "🧪 dry run" if dry_run else "📦 real archive")
-        self._set_stat("source", str(src_r))
-        self._set_stat("dest", str(dst_r))
-        self._set_stat("format", FORMATS.get(fmt, next(iter(FORMATS.values())))[0])
-        self.notify("🔎 Scanning source folder…")
-        self._scan_and_plan(RunRequest(src_r, dst_r, cold_r, fmt, dry_run, device_map))
+        return RunRequest(src_r, dst_r, cold_r, fmt, dry_run, device_map)
 
     @work(thread=True, exclusive=True, group="archive")
     def _scan_and_plan(self, req: RunRequest) -> None:
