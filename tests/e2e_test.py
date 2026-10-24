@@ -3,54 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import struct
 import sys
 import tempfile
 from pathlib import Path
 
-from PIL import Image
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from helpers import make_photo, make_video  # tests/ = sys.path[0] when run as a script
 from photoarch.app import DeviceNamingScreen, PhotoArchApp
 from textual.widgets import DataTable, Input, RadioButton, Select, TabbedContent
-
-
-def make_photo(path: Path, date: str | None = None, model: str | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-        path.write_bytes(b"\x00fakevideo")
-        return
-    img = Image.new("RGB", (8, 8), color=(1, 2, 3))
-    if date and model:
-        exif = img.getexif()
-        exif[36867] = date
-        exif[271] = "TestMake"
-        exif[272] = model
-        img.save(path, exif=exif.tobytes())
-    else:
-        img.save(path)
-
-
-def make_video(path: Path, make: str | None = None, model: str | None = None) -> None:
-    """Craft a minimal ISO-BMFF (mp4/mov) file with make/model atoms."""
-
-    def atom(typ: bytes, payload: bytes) -> bytes:
-        return struct.pack(">I", 8 + len(payload)) + typ + payload
-
-    def data(text: str) -> bytes:
-        return atom(b"data", struct.pack(">II", 1, 0) + text.encode("utf-8"))
-
-    ilst = b""
-    if make:
-        ilst += atom(b"\xa9mak", data(make))
-    if model:
-        ilst += atom(b"\xa9mod", data(model))
-    meta = atom(b"meta", b"\x00\x00\x00\x00" + atom(b"ilst", ilst))
-    moov = atom(b"moov", atom(b"udta", meta))
-    ftyp = atom(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(ftyp + moov)
 
 
 async def main() -> None:

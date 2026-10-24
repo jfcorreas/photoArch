@@ -21,6 +21,13 @@ UNKNOWN_DEVICE = metadata.UNKNOWN_DEVICE
 VIDEOS_DEVICE = metadata.VIDEOS_DEVICE
 WHATSAPP_DEVICE = metadata.WHATSAPP_DEVICE
 
+_PROMPT_EXEMPT = frozenset({UNKNOWN_DEVICE, VIDEOS_DEVICE, WHATSAPP_DEVICE})
+
+
+def _needs_naming(device: str, mapping: dict[str, str]) -> bool:
+    """True when a device must be prompted: new and not a fallback label."""
+    return device not in _PROMPT_EXEMPT and device not in mapping
+
 
 @dataclass
 class PlanItem:
@@ -58,6 +65,11 @@ class ScanResult:
     by_ext: dict[str, int] = field(default_factory=dict)
 
 
+def _count_folders(items: list[PlanItem]) -> int:
+    """Number of distinct destination directories (folders to create)."""
+    return len({str(item.dest_dir) for item in items})
+
+
 def _plan_dests(result: ScanResult, dest: Path) -> None:
     """Recompute conflicts and folder count from each item's dest_dir (in place).
 
@@ -65,10 +77,9 @@ def _plan_dests(result: ScanResult, dest: Path) -> None:
     previous conflict list, so this is shared by scan() and
     apply_device_names().
     """
-    seen_dests: dict[str, PlanItem] = {}  # full dest path -> item, for in-batch duplicates
-    dirs_planned: set[str] = set()
+    seen_dests: set[str] = set()  # full dest paths seen so far (in-batch duplicates)
     result.conflicts = []
-    result.folders_to_create = 0
+    result.folders_to_create = _count_folders(result.items)
 
     for item in result.items:
         full_dest = dest / item.dest_dir / item.name
@@ -77,13 +88,7 @@ def _plan_dests(result: ScanResult, dest: Path) -> None:
             result.conflicts.append(Conflict(item=item, dest_exists=False))
         elif full_dest.exists():
             result.conflicts.append(Conflict(item=item, dest_exists=True))
-
-        dir_key = str(item.dest_dir)
-        if dir_key not in dirs_planned:
-            dirs_planned.add(dir_key)
-            result.folders_to_create += 1
-
-        seen_dests[key] = item
+        seen_dests.add(key)
 
 
 def scan(
@@ -128,11 +133,7 @@ def scan(
             elif ext in VIDEO_EXTS:
                 result.videos += 1
 
-            if (
-                device not in (UNKNOWN_DEVICE, VIDEOS_DEVICE, WHATSAPP_DEVICE)
-                and device not in mapping
-                and device not in result.unknown_devices
-            ):
+            if _needs_naming(device, mapping) and device not in result.unknown_devices:
                 result.unknown_devices.append(device)
 
     _plan_dests(result, dest)
@@ -191,12 +192,13 @@ def apply_resolution(result: ScanResult, action: str, dest_root: Path) -> ScanRe
         errors=list(result.errors),
     )
 
-    conflicting = {(id(c.item.src), str(c.item.src)) for c in result.conflicts}
+    # identities of the conflicting items (conflicts reference the very items
+    # in result.items — both are (re)built together by _plan_dests)
+    conflicting = {id(c.item) for c in result.conflicts}
     used_dests: set[str] = set()
-    dirs_planned: set[str] = set()
 
     for item in result.items:
-        is_conflict = (id(item.src), str(item.src)) in conflicting
+        is_conflict = id(item) in conflicting
         dest_dir = item.dest_dir
         base_name = item.src.name
 
@@ -227,12 +229,9 @@ def apply_resolution(result: ScanResult, action: str, dest_root: Path) -> ScanRe
 
         key = str(dest_root / dest_dir / base_name)
         used_dests.add(key)
-        dir_key = str(dest_dir)
-        if dir_key not in dirs_planned:
-            dirs_planned.add(dir_key)
-            out.folders_to_create += 1
         out.items.append(new_item)
 
+    out.folders_to_create = _count_folders(out.items)
     return out
 
 

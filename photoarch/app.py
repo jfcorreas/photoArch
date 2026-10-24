@@ -65,7 +65,6 @@ def human_size(n: int) -> str:
         if size < 1024 or unit == "TB":
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
-    return f"{n} B"
 
 # --------------------------------------------------------------------------
 # One run's settings, threaded through the pipeline as a single object
@@ -215,10 +214,10 @@ class PhotoArchApp(App):
                 )
                 yield Label("🧩  When a file name conflicts", classes="section")
                 yield RadioSet(
-                    RadioButton("💬  Ask me each time", value=True, id="cf-ask"),
-                    RadioButton("🔀  Always auto-rename", id="cf-rename"),
-                    RadioButton("♻️  Always overwrite", id="cf-overwrite"),
-                    RadioButton("⏭️  Always skip", id="cf-skip"),
+                    *(
+                        RadioButton(label, value=policy == settings.DEFAULTS["conflict"], id=radio_id)
+                        for policy, radio_id, label in settings.CONFLICT_POLICIES
+                    ),
                     id="conflict-policy",
                 )
                 yield Button("🧪  Dry run", id="btn-dry")
@@ -288,33 +287,26 @@ class PhotoArchApp(App):
             self.query_one("#pick-cold", Button).label = f"🗄️  {self._cold}"
         self._update_clear_cold()
         self.query_one("#fmt-select", Select).value = cfg["format"]
-        radio_id = {
-            "ask": "cf-ask",
-            "rename": "cf-rename",
-            "overwrite": "cf-overwrite",
-            "skip": "cf-skip",
-        }[cfg["conflict"]]
+        radio_id = settings.RADIO_BY_POLICY.get(cfg["conflict"], "cf-ask")
         self.query_one(f"#{radio_id}", RadioButton).value = True
 
     def _update_clear_cold(self) -> None:
         """Show the clear button only when a cold folder is set (saves 4 rows)."""
         self.query_one("#clear-cold", Button).display = self._cold is not None
 
+    def _conflict_policy(self) -> str:
+        """Current sidebar conflict policy ("ask" when nothing is pressed)."""
+        pressed = self.query_one("#conflict-policy", RadioSet).pressed_button
+        return settings.POLICY_BY_RADIO.get((pressed.id if pressed else "") or "", "ask")
+
     def _save_settings(self) -> None:
         """Persist the current folders/format/conflict (called on run start)."""
-        policy = self.query_one("#conflict-policy", RadioSet).pressed_button
-        policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
         data = {
             "source": str(self._source) if self._source else "",
             "dest": str(self._dest) if self._dest else "",
             "cold_dest": str(self._cold) if self._cold else "",
             "format": str(self.query_one("#fmt-select", Select).value),
-            "conflict": {
-                "cf-ask": "ask",
-                "cf-rename": "rename",
-                "cf-overwrite": "overwrite",
-                "cf-skip": "skip",
-            }.get(policy_id, "ask"),
+            "conflict": self._conflict_policy(),
         }
         if not settings.save(data, self.settings_path):
             self.notify(f"⚠️ Could not save {self.settings_path}.", severity="warning")
@@ -351,6 +343,11 @@ class PhotoArchApp(App):
 
     def _set_stat(self, key: str, value: str) -> None:
         self._stat_values[key] = value
+        self._render_stats()
+
+    def _set_stats(self, values: dict[str, str]) -> None:
+        """Update several stats at once (one table re-render instead of N)."""
+        self._stat_values.update(values)
         self._render_stats()
 
     # ---- logging ---------------------------------------------------------
@@ -488,10 +485,10 @@ class PhotoArchApp(App):
 
     # ---- run logic -------------------------------------------------------
 
-    def action_dry_run(self) -> None:          # unchanged
+    def action_dry_run(self) -> None:
         self._run(dry_run=True)
 
-    def action_archive(self) -> None:          # unchanged
+    def action_archive(self) -> None:
         self._run(dry_run=False)
 
     def _run(self, dry_run: bool) -> None:
@@ -503,10 +500,14 @@ class PhotoArchApp(App):
         self._reset_stats()
         self.query_one("#results-log", RichLog).clear()
         self.query_one("#errors-log", RichLog).clear()
-        self._set_stat("mode", "🧪 dry run" if dry_run else "📦 real archive")
-        self._set_stat("source", str(req.src))
-        self._set_stat("dest", str(req.dst))
-        self._set_stat("format", FORMATS.get(req.fmt, next(iter(FORMATS.values())))[0])
+        self._set_stats(
+            {
+                "mode": "🧪 dry run" if dry_run else "📦 real archive",
+                "source": str(req.src),
+                "dest": str(req.dst),
+                "format": FORMATS.get(req.fmt, next(iter(FORMATS.values())))[0],
+            }
+        )
         self.notify("🔎 Scanning source folder…")
         self._scan_and_plan(req)
 
@@ -539,27 +540,39 @@ class PhotoArchApp(App):
         # optional cold storage: same restrictions as the primary destination
         cold_r: Optional[Path] = None
         if self._cold is not None:
-            cold = self._cold.expanduser()
-            cold_r = cold.resolve()
-            # validate BEFORE mkdir so a rejected path never touches the source tree
-            if cold_r == src_r or src_r in cold_r.parents:
-                self.notify("⚠️ Cold storage must not be inside the source folder.", severity="error")
-                return None
-            if cold_r == dst_r or dst_r in cold_r.parents or cold_r in dst_r.parents:
-                self.notify(
-                    "⚠️ Cold storage must differ from the destination and not contain it (or be inside it).",
-                    severity="error",
-                )
-                return None
-            try:
-                cold.mkdir(parents=True, exist_ok=True)  # mirror primary (also on dry run)
-            except OSError as exc:
-                self.notify(f"⚠️ Cannot create cold storage: {exc}", severity="error")
-                return None
+            cold_r = self._validate_cold(self._cold, src_r, dst_r)
+            if cold_r is None:
+                return None  # rejected inside _validate_cold (notified there)
 
         fmt = str(self.query_one("#fmt-select", Select).value)
         device_map = devices.load(self.devices_path)
         return RunRequest(src_r, dst_r, cold_r, fmt, dry_run, device_map)
+
+    def _validate_cold(self, cold: Path, src_r: Path, dst_r: Path) -> Optional[Path]:
+        """Validate the cold-storage path; None = rejected (notification shown).
+
+        Restrictions mirror the primary destination: not inside the source,
+        not equal to / nested with the destination. Validation happens BEFORE
+        mkdir so a rejected path never touches the source tree; on success the
+        folder is created (also on dry run, mirroring the primary destination).
+        """
+        cold = cold.expanduser()
+        cold_r = cold.resolve()
+        if cold_r == src_r or src_r in cold_r.parents:
+            self.notify("⚠️ Cold storage must not be inside the source folder.", severity="error")
+            return None
+        if cold_r == dst_r or dst_r in cold_r.parents or cold_r in dst_r.parents:
+            self.notify(
+                "⚠️ Cold storage must differ from the destination and not contain it (or be inside it).",
+                severity="error",
+            )
+            return None
+        try:
+            cold.mkdir(parents=True, exist_ok=True)  # mirror primary (also on dry run)
+        except OSError as exc:
+            self.notify(f"⚠️ Cannot create cold storage: {exc}", severity="error")
+            return None
+        return cold_r
 
     @work(thread=True, exclusive=True, group="archive")
     def _scan_and_plan(self, req: RunRequest) -> None:
@@ -570,15 +583,19 @@ class PhotoArchApp(App):
     def _after_scan(self, req: RunRequest, plan: archiver.ScanResult) -> None:
         for err in plan.errors:
             self._log_error(err)
-        self._set_stat("scanned", str(len(plan.items) + plan.skipped))
-        self._set_stat("media", str(len(plan.items)))
-        self._set_stat("images", str(plan.images))
-        self._set_stat("videos", str(plan.videos))
-        self._set_stat("non_media", str(plan.skipped))
+        self._set_stats(
+            {
+                "scanned": str(len(plan.items) + plan.skipped),
+                "media": str(len(plan.items)),
+                "images": str(plan.images),
+                "videos": str(plan.videos),
+                "non_media": str(plan.skipped),
+            }
+        )
         self._ext_counts = dict(plan.by_ext)
-        self._render_stats()
-        self._set_stat("planned", str(len(plan.items)))
-        self._set_stat("bytes", human_size(plan.total_size))
+        self._set_stats(
+            {"planned": str(len(plan.items)), "bytes": human_size(plan.total_size)}
+        )
 
         if not plan.items:
             self.notify("ℹ️ No media files found in the source folder.", severity="information")
@@ -634,14 +651,13 @@ class PhotoArchApp(App):
     ) -> None:
         groups = [(root, plan.conflicts) for plan, root in targets if plan.conflicts]
         if groups:
-            policy = self.query_one("#conflict-policy", RadioSet).pressed_button
-            policy_id = (policy.id if policy else "cf-ask") or "cf-ask"
-            if policy_id == "cf-ask":
+            policy = self._conflict_policy()
+            if policy == "ask":
                 def got(action: str) -> None:
                     self._after_conflicts(req, targets, action)
                 self.push_screen(ConflictScreen(groups), got)
                 return
-            action = {"cf-rename": "rename", "cf-overwrite": "overwrite", "cf-skip": "skip"}[policy_id]
+            action = policy  # "rename" | "overwrite" | "skip"
         else:
             action = "rename"  # no conflicts; action is irrelevant
         self._after_conflicts(req, targets, action)

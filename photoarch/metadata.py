@@ -7,7 +7,7 @@ import re
 import struct
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import BinaryIO, Iterator, Optional
 
 from .organizer import VIDEO_EXTS  # no import cycle: organizer imports nothing from here
 
@@ -87,7 +87,7 @@ _MDTA_KEYS = {
 
 def _iter_atoms(
     f: BinaryIO, start: int, end: int
-):
+) -> Iterator[tuple[str, int, int]]:
     """Yield (type, payload_start, payload_end) for atoms inside [start, end)."""
     pos = start
     while pos + 8 <= end:
@@ -234,6 +234,14 @@ def read_video_device(path: Path) -> Optional[str]:
     return _device_name(make, model)
 
 
+def _wa_date(match: re.Match[str]) -> Optional[datetime]:
+    """Capture date from a _WA_NAME_RE match (None when unparseable)."""
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d")
+    except ValueError:
+        return None
+
+
 def _whatsapp_date(path: Path) -> Optional[datetime]:
     """Capture date embedded in a WhatsApp filename, or None.
 
@@ -241,13 +249,8 @@ def _whatsapp_date(path: Path) -> Optional[datetime]:
     An unparseable date (e.g. month 40) yields None -> caller falls back
     to mtime; the file is still treated as WhatsApp media.
     """
-    m = _WA_NAME_RE.search(path.stem)
-    if not m:
-        return None
-    try:
-        return datetime.strptime(m.group(1), "%Y%m%d")
-    except ValueError:
-        return None
+    match = _WA_NAME_RE.search(path.stem)
+    return _wa_date(match) if match else None
 
 
 def read_mtime(path: Path) -> datetime:
@@ -269,11 +272,11 @@ def read_capture_info(path: Path) -> tuple[datetime, str]:
     (no ffprobe); their date stays mtime. Missing device -> "Unknown device"
     for images, "Videos" for videos (folder label, never prompted).
     """
-    wa_date = _whatsapp_date(path)
-    if wa_date is not None or _WA_NAME_RE.search(path.stem):
+    wa_match = _WA_NAME_RE.search(path.stem)
+    if wa_match:
         # WA file: date from name (or mtime if the name date is garbage);
         # metadata is never read — WA strips it in ~85% of files anyway.
-        return (wa_date or read_mtime(path)), WHATSAPP_DEVICE
+        return (_wa_date(wa_match) or read_mtime(path)), WHATSAPP_DEVICE
 
     when: Optional[datetime] = None
     device: Optional[str] = None

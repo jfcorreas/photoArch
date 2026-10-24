@@ -20,8 +20,22 @@ SETTINGS_FILE = APP_CONFIG_DIR / "settings.json"
 
 DEFAULTS = {"source": "", "dest": "", "cold_dest": "", "format": "year_month", "conflict": "ask"}
 
+# Conflict policies: (policy value, sidebar radio id, button label).
+# Single source of truth: app.py builds the RadioSet from this table and
+# maps settings <-> radio ids <-> conflict actions through it.
+CONFLICT_POLICIES = (
+    ("ask", "cf-ask", "💬  Ask me each time"),
+    ("rename", "cf-rename", "🔀  Always auto-rename"),
+    ("overwrite", "cf-overwrite", "♻️  Always overwrite"),
+    ("skip", "cf-skip", "⏭️  Always skip"),
+)
+
 # conflict policy values, matching the sidebar RadioSet options
-CONFLICT_ACTIONS = ("ask", "rename", "overwrite", "skip")
+CONFLICT_ACTIONS = tuple(policy for policy, _radio, _label in CONFLICT_POLICIES)
+
+# quick lookups both ways (radio id <-> policy value)
+POLICY_BY_RADIO = {radio: policy for policy, radio, _label in CONFLICT_POLICIES}
+RADIO_BY_POLICY = {policy: radio for policy, radio, _label in CONFLICT_POLICIES}
 
 
 def load(path: Path = SETTINGS_FILE) -> dict[str, str]:
