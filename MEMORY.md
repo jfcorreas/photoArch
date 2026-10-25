@@ -1,20 +1,25 @@
 # MEMORY.md — Photo Archiver (photoArch)
 Project Memory between sessions. Maximum ~50 lines: summarize or remove anything that no longer adds value.
 ## Current Status
-- v0.1.9 clarity refactor (behavior frozen; smoke+e2e green): conflict policy
-  single source in settings.py (CONFLICT_POLICIES → RadioSet build + restore/
-  save/resolve, app._conflict_policy()); _set_stats batches table renders;
-  _validate_cold() split from _validate_run; archiver: _count_folders,
-  _needs_naming + _PROMPT_EXEMPT, seen_dests is a set, conflict key = id(item)
-  (conflicts always reference items of the same result); metadata WA date =
-  one regex search (_wa_date(match)); tests share tests/helpers.py
-  (make_photo/make_video). v0.1.8 before it: modals in screens.py, frozen
-  RunRequest pipeline, _pick_folder.
-- Installed copy at ~/.local/share/photoArch — re-copy after updates.
+- v0.1.10 Omarchy theme adaptation (smoke+theme+e2e green): NEW photoarch/theming.py
+  reads the resolved palette ~/.local/state/omarchy/current/theme/colors.toml +
+  theme.name (stdlib tomllib), builds Textual Theme + Rich ANSI TerminalTheme;
+  app._apply_omarchy_theme() runs first in on_mount; NEW tests/theme_test.py.
+- v0.1.9 (frozen, tests green): conflict policy single source in settings.py,
+  RunRequest pipeline, modals in screens.py, fused Results tab, tests/helpers.py.
+- Installed copy at ~/.local/share/photoArch — re-copy photoarch/*.py after
+  updates (last synced 2026-10-25 = v0.1.10; venv kept, __pycache__ cleared).
 - Skills installed in .agents/skills/. Tooling NOT adopted (ruff/mypy/pytest/uv
   = new deps, forbidden) — tests stay plain asyncio scripts.
 ## Decisions (and why)
 - Easy to run. Exec only with run.sh.
+- Theme: ALWAYS-ON when detected, startup-only (no live reload), silent per-key
+  fallback to Textual defaults; never shells out to `omarchy` (state dir is the
+  already-merged stock+overlay palette). Mapping: blue→primary, yellow→warning
+  (orange==accent in Coppernight), lighter_background→surface, selection→panel,
+  muted→secondary, mode→dark (light themes get light UI); log ANSI colors from
+  the same palette (Omarchy's own terminal map); button-color-foreground =
+  contrast vs primary (default would be light-on-light-blue).
 - Conflicts: one action for all ("Apply to all"); no per-file decisions.
 - EXIF fallback — date→mtime; device→"Unknown device"(images)/"Videos"(videos)/
   "WhatsApp": folder labels, never prompted/stored. WA regex `-\d{8}-WA\d{4}$`
@@ -40,6 +45,8 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
 - TabPane height:auto → 0-height collapse (log defers writes, table renders
   nothing). Fix: #tab-results height:100%, table max-height:60%, log
   min-height:6. ALWAYS assert layout sizes — data-only asserts pass collapsed.
+- theming._FIELD_MAP is colors.toml key→Theme field: the dict comprehension
+  unpacked it backwards once (KeyError at startup). Watch .items() order.
 - Changing item.dest_dir invalidates the conflict list — rebuild via
   archiver.apply_device_names().
 - fr units inside auto-height modals stretch them to fullscreen and
@@ -48,7 +55,8 @@ Project Memory between sessions. Maximum ~50 lines: summarize or remove anything
   before its children.
 - Pilot: clicks within 0.2s debounce ignored (pause 0.25); display toggles
   reflow the sidebar (pause after relayout); DataTable: use row_key.value.
-- Any test creating PhotoArchApp must override settings_path before run_test.
+- Any test creating PhotoArchApp must override settings_path before run_test
+  (and theme_state_dir when the theme must be deterministic).
 - EXIF ASCII fields are NUL-padded — sanitize in metadata._device_name or
   mkdir raises ValueError.
 ## Next Steps

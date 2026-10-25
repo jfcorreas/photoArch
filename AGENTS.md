@@ -8,7 +8,7 @@ the destination root.
 ## Commands
 
 - Run app: `./run.sh` (uses `venv/`, auto-installs `requirements.txt` on first run)
-- Tests: `./venv/bin/python tests/smoke_test.py` then `tests/e2e_test.py`
+- Tests: `./venv/bin/python tests/smoke_test.py`, `tests/theme_test.py`, then `tests/e2e_test.py`
   - No pytest; plain asyncio scripts using `App.run_test()` pilot. Each prints ✅/raises on failure.
   - TUI tests need `await asyncio.sleep(...)` after button clicks: scan/copy run in
     `@work(thread=True)` workers, and `pilot.pause()` alone does not wait for them.
@@ -40,6 +40,13 @@ the destination root.
   (`~/.config/photoarch/settings.json`: source, dest, cold_dest, format, conflict
   policy; `cold_dest:""` = no cold storage). Same tolerant load/save pattern;
   invalid values fall back to defaults.
+- `photoarch/theming.py` — Omarchy theme adaptation: reads the RESOLVED palette
+  (`~/.local/state/omarchy/current/theme/colors.toml` + `theme.name`, stdlib
+  `tomllib`) and builds a Textual `Theme` (CSS vars) + Rich `TerminalTheme`
+  (log ANSI colors). Pure (no UI imports), tolerant (missing/corrupt → None →
+  Textual default look); never shells out to the `omarchy` CLI. Mapping:
+  blue→primary, yellow→warning (NOT orange: equals accent in some themes),
+  lighter_background→surface, selection→panel, muted→secondary, mode→dark.
 - `photoarch/screens.py` — the three modal dialogs: `DirectoryScreen` (folder
   picker), `ConflictScreen` (takes `groups: list[(dest_root, conflicts)]`,
   returns "rename"/"overwrite"/"skip"/"cancel"), `DeviceNamingScreen`
@@ -122,6 +129,11 @@ the destination root.
 - Media metadata is parsed with **pure stdlib** (struct) — never add
   ffmpeg/ffprobe or any media library; that applies to video device AND video
   date (mtime) parsing.
+- TUI adapts to the current Omarchy theme **when available**: palette read once
+  in `on_mount` (`_apply_omarchy_theme`, startup-only — no live reload), silent
+  fallback to Textual defaults on missing/corrupt palette, no subprocess. Tests
+  that need a deterministic theme override `app.theme_state_dir` **before**
+  `run_test` (same pattern as `devices_path`/`settings_path`).
 
 ## Memory
 - When you start, read `MEMORY.md` to understand the project’s status and the decisions that have been made.

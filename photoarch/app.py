@@ -26,7 +26,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from . import archiver, devices, settings
+from . import archiver, devices, settings, theming
 from .screens import ConflictScreen, DeviceNamingScreen, DirectoryScreen
 from .organizer import FORMATS, IMAGE_EXTS, VIDEO_EXTS
 
@@ -106,8 +106,8 @@ class PhotoArchApp(App):
     .section { text-style: bold; color: $accent; }
     #clear-cold { display: none; }
     #app-title {
-        background: $accent;   /* #fea62b amber, follows theme */
-        color: $surface;       /* dark text — good contrast on amber */
+        background: $accent;   /* Omarchy accent when available, Textual default else */
+        color: $surface;       /* contrasting text (surface follows the theme too) */
         text-style: bold;
         height: 1;
         width: 100%;
@@ -188,6 +188,8 @@ class PhotoArchApp(App):
         self.devices_path: Path = devices.DEVICES_FILE
         # Where last-used run settings are stored (tests override this)
         self.settings_path: Path = settings.SETTINGS_FILE
+        # Where the Omarchy theme state lives (tests override this)
+        self.theme_state_dir: Path = theming.STATE_DIR
         # Last mapping shown in the Devices tab (raw device -> friendly name)
         self._devices_map: dict[str, str] = {}
 
@@ -227,7 +229,24 @@ class PhotoArchApp(App):
                 yield TabbedContent(id="tabs")
         yield Footer()
 
+    def _apply_omarchy_theme(self) -> None:
+        """Adapt the TUI to the current Omarchy theme when one is available.
+
+        Startup-only (one palette read); missing/corrupt palette files keep
+        Textual's default look silently — the feature is "if it is available".
+        """
+        colors = theming.load_palette(self.theme_state_dir)
+        if not colors:
+            return
+        slug = theming.load_slug(self.theme_state_dir)
+        self.register_theme(theming.build_theme(colors, slug))
+        self.theme = f"omarchy-{slug}"
+        ansi = theming.build_ansi_theme(colors)  # activity-log colors follow too
+        self.ansi_theme_dark = ansi
+        self.ansi_theme_light = ansi
+
     async def on_mount(self) -> None:
+        self._apply_omarchy_theme()
         tabs = self.query_one("#tabs", TabbedContent)
         # Statistics + Results fused into ONE tab: aggregate stats table on
         # top, live per-file activity log below (log capped to bound memory).
